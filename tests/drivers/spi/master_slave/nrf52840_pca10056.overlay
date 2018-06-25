@@ -1,0 +1,17 @@
+&spi1 {
+        compatible = "nordic,nrf-spi";
+	status = "ok";
+	sck-pin = <3>;
+	mosi-pin = <4>;
+	miso-pin = <28>;
+	cs-gpios = <&gpio0 27 0>;
+};
+&spi2 {
+        compatible = "nordic,nrf-spis";
+	status = "ok";
+	sck-pin = <31>;
+	mosi-pin = <30>;
+	miso-pin = <29>;
+	csn-pin = <26>;
+	def-char = <0xFF>;
+};
