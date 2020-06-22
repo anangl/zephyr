@@ -4,8 +4,7 @@
 config PWM_NRFX
 	bool "nRF PWM nrfx driver"
 	default y
-	depends on HAS_HW_NRF_PWM0 || HAS_HW_NRF_PWM1 || \
-		   HAS_HW_NRF_PWM2 || HAS_HW_NRF_PWM3
+	depends on $(dt_compat_enabled,$(DT_COMPAT_NORDIC_NRF_PWM))
 	select NRFX_PWM0 if "$(dt_nodelabel_enabled,pwm0)"
 	select NRFX_PWM1 if "$(dt_nodelabel_enabled,pwm1)"
 	select NRFX_PWM2 if "$(dt_nodelabel_enabled,pwm2)"

@@ -14,7 +14,7 @@ config ENTROPY_NRF_FORCE_ALT
 menuconfig ENTROPY_NRF5_RNG
 	bool "nRF5 RNG driver"
 	depends on !ENTROPY_NRF_FORCE_ALT
-	depends on HAS_HW_NRF_RNG
+	depends on $(dt_compat_enabled,$(DT_COMPAT_NORDIC_NRF_RNG))
 	select ENTROPY_HAS_DRIVER
 	default y
 	help
