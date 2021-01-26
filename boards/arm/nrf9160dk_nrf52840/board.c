@@ -22,7 +22,16 @@ LOG_MODULE_REGISTER(board_control, CONFIG_BOARD_NRF9160DK_LOG_LEVEL);
 	DT_GPIO_FLAGS_BY_IDX(DT_NODELABEL(name), prop, idx)
 #define GET_DEV(name, prop, idx) DEVICE_DT_GET(GET_CTLR(name, prop, idx))
 
-#define USE_RESET_GPIO DT_NODE_HAS_STATUS(DT_NODELABEL(reset_input), okay)
+/* If the GPIO pin selected to be the reset line is actually the pin that
+ * exposes the nRESET function (P0.18 in nRF52840), there is no need to
+ * provide any additional GPIO configuration for it.
+ */
+#define RESET_INPUT_IS_PINRESET (IS_ENABLED(CONFIG_GPIO_AS_PINRESET) && \
+				 GET_PORT(reset_input, gpios, 0) == 0 && \
+				 GET_PIN(reset_input, gpios, 0) == 18)
+#define USE_RESET_GPIO \
+	(DT_NODE_HAS_STATUS(DT_NODELABEL(reset_input), okay) && \
+	 !RESET_INPUT_IS_PINRESET)
 
 struct switch_cfg {
 	const struct device *gpio;
@@ -77,6 +86,9 @@ static const struct switch_cfg routing_switches[] = {
 	ROUTING_SWITCH(nrf_interface_pins_0_2_routing)
 	ROUTING_SWITCH(nrf_interface_pins_3_5_routing)
 	ROUTING_SWITCH(nrf_interface_pins_6_8_routing)
+	ROUTING_SWITCH(nrf_interface_pin_9_routing)
+	ROUTING_SWITCH(io_expander_pins_routing)
+	ROUTING_SWITCH(external_flash_pins_routing)
 };
 
 #if USE_RESET_GPIO
