@@ -34,15 +34,13 @@
 #define FLASH_TEST_REGION_OFFSET \
 	DT_REG_SIZE(DT_NODE_BY_FIXED_PARTITION_LABEL(fpga_bitstream))
 #else
-#define FLASH_TEST_REGION_OFFSET 0xff000
+#define FLASH_TEST_REGION_OFFSET 0xf8000
 #endif
 #define FLASH_SECTOR_SIZE        4096
+#define TEST_REGION_SIZE         (2*FLASH_SECTOR_SIZE)
 
 void main(void)
 {
-	const uint8_t expected[] = { 0x55, 0xaa, 0x66, 0x99 };
-	const size_t len = sizeof(expected);
-	uint8_t buf[sizeof(expected)];
 	const struct device *flash_dev;
 	int rc;
 
@@ -66,7 +64,7 @@ void main(void)
 	flash_write_protection_set(flash_dev, false);
 
 	rc = flash_erase(flash_dev, FLASH_TEST_REGION_OFFSET,
-			 FLASH_SECTOR_SIZE);
+			 TEST_REGION_SIZE);
 	if (rc != 0) {
 		printf("Flash erase failed! %d\n", rc);
 	} else {
@@ -75,6 +73,11 @@ void main(void)
 
 	printf("\nTest 2: Flash write\n");
 	flash_write_protection_set(flash_dev, false);
+
+#if 0
+	const uint8_t expected[] = { 0x55, 0xaa, 0x66, 0x99 };
+	const size_t len = sizeof(expected);
+	uint8_t buf[sizeof(expected)];
 
 	printf("Attempting to write %u bytes\n", len);
 	rc = flash_write(flash_dev, FLASH_TEST_REGION_OFFSET, expected, len);
@@ -106,4 +109,45 @@ void main(void)
 			++wp;
 		}
 	}
+#else
+
+#define BLOCK_LEN 512
+#define BLOCK_CNT (TEST_REGION_SIZE / BLOCK_LEN)
+
+	for (int i = 0; i < BLOCK_CNT; ++i) {
+		static uint8_t buffer[BLOCK_LEN];
+		for (int n = 0; n < BLOCK_LEN; ++n) {
+			buffer[n] = i + n;
+		}
+
+		printf("Writing block %u (%u bytes)\n", i, BLOCK_LEN);
+		rc = flash_write(flash_dev, 0x8000 + i*BLOCK_LEN,
+				 buffer, BLOCK_LEN);
+		if (rc != 0) {
+			printf("Flash write failed! %d\n", rc);
+			return;
+		}
+	}
+
+	for (int i = 0; i < BLOCK_CNT; ++i) {
+		static uint8_t expected[BLOCK_LEN];
+		static uint8_t actual[BLOCK_LEN];
+		for (int n = 0; n < BLOCK_LEN; ++n) {
+			expected[n] = i + n;
+		}
+
+		printf("Reading block %u (%u bytes)\n", i, BLOCK_LEN);
+		rc = flash_read(flash_dev, 0x8000 + i*BLOCK_LEN,
+				actual, BLOCK_LEN);
+		if (rc != 0) {
+			printf("Flash read failed! %d\n", rc);
+			return;
+		}
+
+		if (memcmp(expected, actual, BLOCK_LEN) != 0) {
+			printf("Data read does not match data written!\n");
+			return;
+		}
+	}
+#endif
 }
