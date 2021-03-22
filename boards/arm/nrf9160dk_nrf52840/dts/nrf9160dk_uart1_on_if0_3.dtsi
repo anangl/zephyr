@@ -14,8 +14,8 @@
 
 &uart1 {
 	status = "okay";
-	tx-pin = <17>; /* <&interface_to_nrf9160 0 0>; */
-	rx-pin = <20>; /* <&interface_to_nrf9160 1 0>; */
-	rts-pin = <15>; /* <&interface_to_nrf9160 2 0>; */
-	cts-pin = <22>; /* <&interface_to_nrf9160 3 0>; */
+	tx-pin = <&interface_to_nrf9160 0 0>;
+	rx-pin = <&interface_to_nrf9160 1 0>;
+	rts-pin = <&interface_to_nrf9160 2 0>;
+	cts-pin = <&interface_to_nrf9160 3 0>;
 };
