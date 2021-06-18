@@ -1,0 +1,11 @@
+&spi4 {
+        compatible = "nordic,nrf-spim";
+	status = "okay";
+	sck-pin = <8>;
+	mosi-pin = <9>;
+	miso-pin = <10>;
+	/*sck-pin = <32>;
+	mosi-pin = <33>;
+	miso-pin = <36>;*/
+	cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+};
