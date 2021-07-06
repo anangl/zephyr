@@ -1,0 +1,27 @@
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	sck-pin = <6>;
+	mosi-pin = <7>;
+	miso-pin = <25>;
+	cs-gpios = <&gpio0 26 GPIO_ACTIVE_LOW>;
+};
+
+&uart1 {
+	status = "disabled";
+};
+
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "disabled";
+	sck-pin = <41>;
+	mosi-pin = <40>;
+	miso-pin = <39>;
+	cs-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+};
+
+&uart2 {
+	status = "disabled";
+	tx-pin = <43>;
+	rx-pin = <42>;
+};
