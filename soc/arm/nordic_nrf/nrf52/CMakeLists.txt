@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
-zephyr_library()
-
 zephyr_library_sources(
   soc.c
-  )
-
-zephyr_library_include_directories(
-  ${ZEPHYR_BASE}/kernel/include
-  ${ZEPHYR_BASE}/arch/arm/include
   )
 
 if(CONFIG_SOC_NRF52832_ALLOW_SPIM_DESPITE_PAN_58 AND CONFIG_SPI_NRFX_SPIM)
@@ -22,5 +15,3 @@ if(CONFIG_SOC_NRF52832)
     endif()
   endif()
 endif()
-
-set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/arm/cortex_m/scripts/linker.ld CACHE INTERNAL "")
