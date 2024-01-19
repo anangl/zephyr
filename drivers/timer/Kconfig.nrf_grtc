@@ -7,7 +7,6 @@ menuconfig NRF_GRTC_TIMER
 	select TICKLESS_CAPABLE
 	select TIMER_HAS_64BIT_CYCLE_COUNTER
 	select NRFX_GRTC
-	select SYSTEM_CLOCK_WAIT
 	help
 	  This module implements a kernel device driver for the nRF Global Real
 	  Time Counter NRF_GRTC and provides the standard "system clock driver"
