@@ -1,0 +1,24 @@
+# Nordic Semiconductor nRF54H20 Application MCU
+
+# Copyright (c) 2024 Nordic Semiconductor ASA
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_NRF54H20_ENG0_CPUAPP
+
+config SOC
+	default "nRF54H20_CPUAPP"
+
+config NUM_IRQS
+	default 471
+
+config SOC_TRIM_HSFLL
+	default y
+
+config FICR_HSFLL_TRIM_IDX
+	# CPUAPP operates at 320 MHz
+	default 0
+
+config HSFLL_CLOCK_MULTIPLIER
+	default 0
+
+endif # SOC_NRF54H20_ENG0_CPUAPP

@@ -1,0 +1,45 @@
+# Nordic Semiconductor nRF54H MCU line
+
+# Copyright (c) 2024 Nordic Semiconductor ASA
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SERIES_NRF54HX
+	bool "Nordic Semiconductor nRF54H series MCU"
+	select ARM
+	select ARMV8_M_DSP
+	select CPU_CORTEX_M33
+	select SOC_FAMILY_NRF
+	imply XIP
+	select HAS_NRFX
+	select HAS_NORDIC_DRIVERS
+	select HAS_SEGGER_RTT if ZEPHYR_SEGGER_MODULE
+	help
+	  Enable support for nRF54H MCU series
+
+if SOC_SERIES_NRF54HX
+
+config SOC_TRIM_HSFLL
+	bool
+	help
+	  SoC HSFLL hardware should be trimmed for accurate clock speeds.
+
+config FICR_HSFLL_TRIM_IDX
+	int
+	depends on SOC_TRIM_HSFLL
+	help
+	  Table 1 of the FICR chapter in the Product Specification describes
+	  which index of the COARSE and FINE trims must be applied to the domain
+	  HSFLL for a given frequency.
+
+	  Refer to nRF54H20 Product Specification > Product configuration >
+	  Information configuration registers (ICR) > Peripherals > FICR
+	  for more information.
+
+config HSFLL_CLOCK_MULTIPLIER
+	int
+	depends on SOC_TRIM_HSFLL
+	help
+	  The HSFLL multiplies the frequency of the input 16 MHz clock
+	  by a value stored in CLOCKTRL.MULT register.
+
+endif # SOC_SERIES_NRF54HX
