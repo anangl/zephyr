@@ -77,6 +77,12 @@
 			ptr-ext-uicr = <&cpurad_uicr_ext>;
 		};
 
+		ficr: ficr@fffe000 {
+			compatible = "nordic,nrf-ficr";
+			reg = <0xfffe000 DT_SIZE_K(2)>;
+			#nordic,ficr-cells = <1>;
+		};
+
 		cpuapp_ram0: sram@22000000 {
 			compatible = "mmio-sram";
 			reg = <0x22000000 DT_SIZE_K(32)>;
