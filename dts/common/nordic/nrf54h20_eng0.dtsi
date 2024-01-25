@@ -53,6 +53,14 @@
 		};
 	};
 
+	clocks {
+		fll16m: fll16m {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <DT_FREQ_M(16)>;
+		};
+	};
+
 	soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
