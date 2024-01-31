@@ -18,15 +18,13 @@ properties:
     description: |
       Processor ID of the VPR core.
 
-  loader-img-dst:
+  execution-memory:
     type: phandle
     required: true
     description: |
-      Destination memory handle. Points to the area from which the VPR core
-      will start execution.
+      Memory area from which the VPR core will execute.
 
-  loader-img-src:
+  source-memory:
     type: phandle
     description: |
-      Source memory handle. If specified, then the VPR's firmware image will be
-      relocated from this location to the one given by "loader-img-dst".
+      Memory area or partition from which the VPR code will be loaded.
