@@ -97,6 +97,11 @@
 	status = "okay";
 };
 
+&cpuppr_vpr {
+	source-memory = <&cpuppr_code_partition>;
+	execution-memory = <&cpuppr_ram3x_region>;
+};
+
 &gpiote130 {
 	status = "okay";
 	owned-channels = <0 1 2 3 4 5 6 7>;
