@@ -78,9 +78,7 @@ zephyr_library_sources_ifdef(CONFIG_SOC_NRF5340_CPUAPP ${MDK_DIR}/system_nrf5340
 zephyr_library_sources_ifdef(CONFIG_SOC_NRF5340_CPUNET ${MDK_DIR}/system_nrf5340_network.c)
 zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF54LX ${MDK_DIR}/system_nrf54l.c)
 zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF91X  ${MDK_DIR}/system_nrf91.c)
-if(CONFIG_ARM)
-  zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF54HX ${MDK_DIR}/system_nrf54h.c)
-endif()
+zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF54HX ${MDK_DIR}/system_nrf54h.c)
 
 zephyr_library_sources(nrfx_glue.c)
 zephyr_library_sources(${HELPERS_DIR}/nrfx_flag32_allocator.c)
