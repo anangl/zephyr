@@ -39,6 +39,7 @@
 			device_type = "cpu";
 			clock-frequency = <DT_FREQ_M(16)>;
 			riscv,isa = "rv32emc";
+			nordic,bus-width = <32>;
 		};
 	};
 
