@@ -45,6 +45,8 @@ zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54H20_ENGA_CPUAPP NRF54H20_ENGA_X
                                                                  NRF_APPLICATION)
 zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54H20_ENGA_CPURAD NRF54H20_ENGA_XXAA
                                                                  NRF_RADIOCORE)
+zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54H20_ENGA_CPUPPR NRF54H20_ENGA_XXAA
+                                                                 NRF_PPR)
 
 zephyr_compile_definitions_ifdef(CONFIG_NRF_APPROTECT_LOCK
                                  ENABLE_APPROTECT)
