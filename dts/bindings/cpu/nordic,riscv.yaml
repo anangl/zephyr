@@ -1,8 +1,8 @@
 # Copyright (c) 2024 Nordic Semiconductor ASA
 # SPDX-License-Identifier: Apache-2.0
 
-description: Nordic Semiconductor RISC-V CPU
+description: Nordic Semiconductor RISC-V VPR CPU
 
-compatible: "nordic,riscv"
+compatible: "nordic,vpr"
 
 include: riscv,cpus.yaml
