@@ -75,6 +75,11 @@ DEFINE_MM_REG_RD(isr,		0x30)
 DEFINE_MM_REG_RD_WR(dr,		0x60)
 DEFINE_MM_REG_RD_WR(spi_ctrlr0,	0xf4)
 
+DEFINE_MM_REG_RD_WR(xip_incr_inst,	0x100)
+DEFINE_MM_REG_RD_WR(xip_wrap_inst,	0x104)
+DEFINE_MM_REG_RD_WR(xip_ctrl,		0x108)
+DEFINE_MM_REG_RD_WR(xip_ser,		0x10c)
+
 static void read_rx_fifo(const struct device *dev,
 			 const struct mspi_xfer_packet *packet)
 {
@@ -456,6 +461,29 @@ static int api_dev_config(const struct device *dev,
 	write_ser(dev, BIT(dev_id->dev_idx));
 
 	return 0;
+}
+
+void test_xip(const struct device *dev)
+{
+	// write_xip_incr_inst(dev, 0xEC13);
+	// write_xip_wrap_inst(dev, 0xEC13);
+	// write_xip_ctrl(dev, 0x0042868B);
+
+	// printk("ctrlr0: %08x\n", read_ctrlr0(dev));
+	// printk("xip_incr_inst: %08x\n", read_xip_incr_inst(dev));
+	// printk("xip_wrap_inst: %08x\n", read_xip_wrap_inst(dev));
+	// printk("xip_ctrl: %08x\n", read_xip_ctrl(dev));
+
+	write_ssienr(dev, SSIENR_SSIC_EN_BIT);
+
+	NRF_EXMIF->EXTCONF1.OFFSET = 0;
+	NRF_EXMIF->EXTCONF1.SIZE = 0x10000;
+	NRF_EXMIF->EXTCONF1.ENABLE = 1;
+
+	const uint8_t *xip = (const uint8_t *)0x60000000;
+	volatile uint32_t test = *(const uint32_t *)xip;
+
+	// printk("XIP: %08X\n", *(const uint32_t *)xip);
 }
 
 static int api_get_channel_status(const struct device *dev, uint8_t ch)
