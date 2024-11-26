@@ -15,9 +15,11 @@
 #include <zephyr/pm/device.h>
 
 #include "mspi_dw.h"
+#include "mspi_dw_vendor_specific.h"
 
 LOG_MODULE_REGISTER(mspi_dw, CONFIG_MSPI_LOG_LEVEL);
 
+#define INVALID_DEV_IDX 0xFFFF
 #define DUMMY_BYTE 0xAA
 
 struct mspi_dw_data {
@@ -213,10 +215,7 @@ static void mspi_dw_isr(const struct device *dev)
 		}
 	}
 
-	/* TODO: provide more generic solution */
-#ifdef CONFIG_HAS_NRFX
-	NRF_EXMIF->EVENTS_CORE = 0;
-#endif
+	VENDOR_SPECIFIC_CLEAR_IRQ(dev);
 }
 
 static int api_config(const struct mspi_dt_spec *spec)
@@ -447,7 +446,7 @@ static int api_dev_config(const struct device *dev,
 	/* Always use Motorola SPI frame format. */
 	ctrlr0 |= FIELD_PREP(CTRLR0_FRF_MASK, CTRLR0_FRF_SPI);
 
-	spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_CLK_STRETCH_EN_MASK, 1);
+	spi_ctrlr0 |= SPI_CTRLR0_CLK_STRETCH_EN_BIT;
 
 	write_ctrlr0(dev, ctrlr0);
 	write_spi_ctrlr0(dev, spi_ctrlr0);
@@ -733,21 +732,21 @@ static int dev_init(const struct device *dev)
 	int rc;
 
 #ifdef CONFIG_PINCTRL
-	pinctrl_apply_state(dev_config->pcfg, PINCTRL_STATE_DEFAULT);
+	rc = pinctrl_apply_state(dev_config->pcfg, PINCTRL_STATE_DEFAULT);
+	if (rc < 0) {
+		return rc;
+	}
 #endif
 
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 
-	/* TODO: provide more generic solution */
-#ifdef CONFIG_HAS_NRFX
-	NRF_EXMIF->INTENSET = BIT(0);
-	NRF_EXMIF->TASKS_START = 1;
-#endif
+	VENDOR_SPECIFIC_INIT(dev);
 
 	dev_config->irq_config();
 
 	write_ssienr(dev, 0);
 
+	dev_data->dev_id.dev_idx = INVALID_DEV_IDX;
 	k_sem_init(&dev_data->finished, 0, 1);
 
 	for (ce_gpio = dev_config->ce_gpios;
