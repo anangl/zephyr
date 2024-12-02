@@ -22,20 +22,36 @@ LOG_MODULE_REGISTER(mspi_dw, CONFIG_MSPI_LOG_LEVEL);
 #define INVALID_DEV_IDX 0xFFFF
 #define DUMMY_BYTE 0xAA
 
+struct xip_params {
+	uint32_t read_cmd;
+	uint32_t write_cmd;
+	uint16_t rx_dummy;
+	uint8_t cmd_length;
+	uint8_t addr_length;
+};
+
 struct mspi_dw_data {
 	uint32_t packets_done;
 	uint8_t *buf_pos;
 	const uint8_t *buf_end;
-	uint32_t read_cmd;
-	uint32_t write_cmd;
+
+	uint32_t ctrlr0;
+	uint32_t spi_ctrlr0;
+	uint32_t baudr;
+
+	uint32_t xip_freq;
+	struct xip_params xip_params_stored;
+	struct xip_params xip_params_active;
+	uint16_t xip_enabled;
+	enum mspi_io_mode xip_io_mode_stored;
+	enum mspi_io_mode xip_io_mode_active;
+	enum mspi_cpp_mode xip_cpp;
+
 	uint16_t dummy_bytes;
-	uint16_t rx_dummy;
-	uint16_t tx_dummy;
-	uint8_t cmd_length;
-	uint8_t addr_length;
-	uint8_t to_discard;
+	uint8_t bytes_to_discard;
 	uint8_t bytes_per_frame;
 	bool standard_spi;
+
 	struct k_sem finished;
 	struct mspi_dev_id dev_id;
 	struct mspi_xfer xfer;
@@ -62,8 +78,8 @@ struct mspi_dw_config {
 	DEFINE_MM_REG_RD(reg, off) \
 	DEFINE_MM_REG_WR(reg, off)
 
-DEFINE_MM_REG_RD_WR(ctrlr0,	0x00)
-DEFINE_MM_REG_RD_WR(ctrlr1,	0x04)
+DEFINE_MM_REG_WR(ctrlr0,	0x00)
+DEFINE_MM_REG_WR(ctrlr1,	0x04)
 DEFINE_MM_REG_WR(ssienr,	0x08)
 DEFINE_MM_REG_WR(ser,		0x10)
 DEFINE_MM_REG_WR(baudr,		0x14)
@@ -75,61 +91,11 @@ DEFINE_MM_REG_RD(sr,		0x28)
 DEFINE_MM_REG_WR(imr,		0x2c)
 DEFINE_MM_REG_RD(isr,		0x30)
 DEFINE_MM_REG_RD_WR(dr,		0x60)
-DEFINE_MM_REG_RD_WR(spi_ctrlr0,	0xf4)
+DEFINE_MM_REG_WR(spi_ctrlr0,	0xf4)
 
-static void read_rx_fifo(const struct device *dev,
-			 const struct mspi_xfer_packet *packet)
-{
-	struct mspi_dw_data *dev_data = dev->data;
-	const struct mspi_dw_config *dev_config = dev->config;
-	uint8_t to_discard = dev_data->to_discard;
-	uint8_t *buf_pos = dev_data->buf_pos;
-	const uint8_t *buf_end = &packet->data_buf[packet->num_bytes];
-	uint32_t remaining;
-
-	do {
-		uint32_t data = read_dr(dev);
-
-		if (to_discard) {
-			--to_discard;
-		} else {
-			*buf_pos = (uint8_t)data;
-			buf_pos += 1;
-
-			if (buf_pos >= buf_end) {
-				dev_data->to_discard = to_discard;
-				dev_data->buf_pos = buf_pos;
-				return;
-			}
-		}
-	} while (FIELD_GET(RXFLR_RXTFL_MASK, read_rxflr(dev)));
-
-	remaining = buf_end - buf_pos;
-	if (remaining - 1 < dev_config->rx_fifo_threshold) {
-		write_rxftlr(dev, remaining - 1);
-	}
-
-	dev_data->to_discard = to_discard;
-	dev_data->buf_pos = buf_pos;
-}
-
-static bool make_rx_cycles(const struct device *dev)
-{
-	struct mspi_dw_data *dev_data = dev->data;
-	const struct mspi_dw_config *dev_config = dev->config;
-
-	do {
-		write_dr(dev, DUMMY_BYTE);
-
-		--dev_data->dummy_bytes;
-		if (!dev_data->dummy_bytes) {
-			return true;
-		}
-	} while (FIELD_GET(TXFLR_TXTFL_MASK, read_txflr(dev)) <
-		 dev_config->tx_fifo_depth);
-
-	return false;
-}
+DEFINE_MM_REG_WR(xip_incr_inst,	0x100)
+DEFINE_MM_REG_WR(xip_wrap_inst,	0x104)
+DEFINE_MM_REG_WR(xip_ctrl,	0x108)
 
 static void tx_data(const struct device *dev,
 		    const struct mspi_xfer_packet *packet)
@@ -182,6 +148,89 @@ static void tx_data(const struct device *dev,
 	dev_data->buf_pos = (uint8_t *)buf_pos;
 }
 
+static bool make_rx_cycles(const struct device *dev)
+{
+	struct mspi_dw_data *dev_data = dev->data;
+	const struct mspi_dw_config *dev_config = dev->config;
+	uint16_t dummy_bytes = dev_data->dummy_bytes;
+	/* See tx_data(). */
+	uint32_t room = 1;
+	uint8_t tx_fifo_depth = dev_config->tx_fifo_depth;
+
+	do {
+		write_dr(dev, DUMMY_BYTE);
+
+		--dummy_bytes;
+		if (!dummy_bytes) {
+			dev_data->dummy_bytes = 0;
+			return true;
+		}
+
+		if (!--room) {
+			room = tx_fifo_depth
+			     - FIELD_GET(TXFLR_TXTFL_MASK, read_txflr(dev));
+		}
+	} while (room);
+
+	dev_data->dummy_bytes = dummy_bytes;
+	return false;
+}
+
+static void read_rx_fifo(const struct device *dev,
+			 const struct mspi_xfer_packet *packet)
+{
+	struct mspi_dw_data *dev_data = dev->data;
+	const struct mspi_dw_config *dev_config = dev->config;
+	uint8_t bytes_to_discard = dev_data->bytes_to_discard;
+	uint8_t *buf_pos = dev_data->buf_pos;
+	const uint8_t *buf_end = &packet->data_buf[packet->num_bytes];
+	uint8_t bytes_per_frame = dev_data->bytes_per_frame;
+	/* See `room` in tx_data(). */
+	uint32_t in_fifo = 1;
+	uint32_t remaining_bytes;
+
+	do {
+		uint32_t data = read_dr(dev);
+
+		if (bytes_to_discard) {
+			--bytes_to_discard;
+		} else {
+			if (bytes_per_frame == 4) {
+				buf_pos[0] = (uint8_t)(data >> 24);
+				buf_pos[1] = (uint8_t)(data >> 16);
+				buf_pos[2] = (uint8_t)(data >> 8);
+				buf_pos[3] = (uint8_t)(data >> 0);
+				buf_pos += 4;
+			} else if (bytes_per_frame == 2) {
+				buf_pos[0] = (uint8_t)(data >> 8);
+				buf_pos[1] = (uint8_t)(data >> 0);
+				buf_pos += 2;
+			} else {
+				*buf_pos = (uint8_t)data;
+				buf_pos += 1;
+			}
+
+			if (buf_pos >= buf_end) {
+				dev_data->bytes_to_discard = bytes_to_discard;
+				dev_data->buf_pos = buf_pos;
+				return;
+			}
+		}
+
+		if (!--in_fifo) {
+			in_fifo = FIELD_GET(RXFLR_RXTFL_MASK, read_rxflr(dev));
+		}
+	} while (in_fifo);
+
+	remaining_bytes = bytes_to_discard + buf_end - buf_pos;
+	if (remaining_bytes - 1 < dev_config->rx_fifo_threshold) {
+		write_rxftlr(dev, remaining_bytes - 1);
+	}
+
+	dev_data->bytes_to_discard = bytes_to_discard;
+	dev_data->buf_pos = buf_pos;
+}
+
 static void mspi_dw_isr(const struct device *dev)
 {
 	struct mspi_dw_data *dev_data = dev->data;
@@ -195,9 +244,9 @@ static void mspi_dw_isr(const struct device *dev)
 
 	if (dev_data->buf_pos >= dev_data->buf_end) {
 		write_imr(dev, 0);
-		/* It may happen that the controller still shifts out the last
-		 * frame (the last interrupt occurs when the TX fifo is empty).
-		 * Wait if it still signals that it is busy.
+		/* It may happen that at this point the controller is still
+		 * shifting out the last frame (the last interrupt occurs when
+		 * the TX FIFO is empty). Wait if it signals that it is busy.
 		 */
 		while (read_sr(dev) & SR_BUSY_BIT) {
 		}
@@ -215,7 +264,7 @@ static void mspi_dw_isr(const struct device *dev)
 		}
 	}
 
-	VENDOR_SPECIFIC_CLEAR_IRQ(dev);
+	vendor_specific_irq_clear(dev);
 }
 
 static int api_config(const struct mspi_dt_spec *spec)
@@ -225,18 +274,19 @@ static int api_config(const struct mspi_dt_spec *spec)
 	return -ENOTSUP;
 }
 
-static int apply_io_mode(const struct device *dev, enum mspi_io_mode io_mode,
-			 uint32_t *ctrlr0, uint32_t *spi_ctrlr0)
+static bool apply_io_mode(struct mspi_dw_data *dev_data,
+			  enum mspi_io_mode io_mode)
 {
-	struct mspi_dw_data *dev_data = dev->data;
+	dev_data->ctrlr0 &= ~CTRLR0_SPI_FRF_MASK;
+	dev_data->spi_ctrlr0 &= ~SPI_CTRLR0_TRANS_TYPE_MASK;
 
 	/* Frame format used for transferring data. */
 
 	if (io_mode == MSPI_IO_MODE_SINGLE) {
-		*ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
-				      CTRLR0_SPI_FRF_STANDARD);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
+					       CTRLR0_SPI_FRF_STANDARD);
 		dev_data->standard_spi = true;
-		return 0;
+		return true;
 	}
 
 	dev_data->standard_spi = false;
@@ -245,24 +295,24 @@ static int apply_io_mode(const struct device *dev, enum mspi_io_mode io_mode,
 	case MSPI_IO_MODE_DUAL:
 	case MSPI_IO_MODE_DUAL_1_1_2:
 	case MSPI_IO_MODE_DUAL_1_2_2:
-		*ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
-				      CTRLR0_SPI_FRF_DUAL);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
+					       CTRLR0_SPI_FRF_DUAL);
 		break;
 	case MSPI_IO_MODE_QUAD:
 	case MSPI_IO_MODE_QUAD_1_1_4:
 	case MSPI_IO_MODE_QUAD_1_4_4:
-		*ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
-				      CTRLR0_SPI_FRF_QUAD);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
+					       CTRLR0_SPI_FRF_QUAD);
 		break;
 	case MSPI_IO_MODE_OCTAL:
 	case MSPI_IO_MODE_OCTAL_1_1_8:
 	case MSPI_IO_MODE_OCTAL_1_8_8:
-		*ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
-				      CTRLR0_SPI_FRF_OCTAL);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SPI_FRF_MASK,
+					       CTRLR0_SPI_FRF_OCTAL);
 		break;
 	default:
 		LOG_ERR("IO mode %d not supported", io_mode);
-		return -EINVAL;
+		return false;
 	}
 
 	/* Transfer format used for Address and Instruction: */
@@ -272,8 +322,8 @@ static int apply_io_mode(const struct device *dev, enum mspi_io_mode io_mode,
 	case MSPI_IO_MODE_QUAD_1_1_4:
 	case MSPI_IO_MODE_OCTAL_1_1_8:
 		/* - both sent in Standard SPI mode */
-		*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_TRANS_TYPE_MASK,
-					  SPI_CTRLR0_TRANS_TYPE_TT0);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_TRANS_TYPE_MASK,
+						   SPI_CTRLR0_TRANS_TYPE_TT0);
 		break;
 	case MSPI_IO_MODE_DUAL_1_2_2:
 	case MSPI_IO_MODE_QUAD_1_4_4:
@@ -281,47 +331,149 @@ static int apply_io_mode(const struct device *dev, enum mspi_io_mode io_mode,
 		/* - Instruction sent in Standard SPI mode,
 		 *   Address sent the same way as data
 		 */
-		*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_TRANS_TYPE_MASK,
-					  SPI_CTRLR0_TRANS_TYPE_TT1);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_TRANS_TYPE_MASK,
+						   SPI_CTRLR0_TRANS_TYPE_TT1);
 		break;
 	default:
 		/* - both sent the same way as data. */
-		*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_TRANS_TYPE_MASK,
-					  SPI_CTRLR0_TRANS_TYPE_TT2);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_TRANS_TYPE_MASK,
+						   SPI_CTRLR0_TRANS_TYPE_TT2);
 		break;
 	}
 
-	return 0;
+	return true;
 }
 
-static int apply_cmd_length(uint32_t *spi_ctrlr0, uint32_t cmd_length)
+static bool apply_xip_io_mode(const struct mspi_dw_data *dev_data,
+			      uint32_t *xip_ctrl)
+{
+	enum mspi_io_mode io_mode = dev_data->xip_io_mode_active;
+
+	/* Frame format used for transferring data. */
+
+	if (io_mode == MSPI_IO_MODE_SINGLE) {
+		LOG_ERR("XIP not available in single line mode");
+		return false;
+	}
+
+	switch (io_mode) {
+	case MSPI_IO_MODE_DUAL:
+	case MSPI_IO_MODE_DUAL_1_1_2:
+	case MSPI_IO_MODE_DUAL_1_2_2:
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_FRF_MASK,
+					XIP_CTRL_FRF_DUAL);
+		break;
+	case MSPI_IO_MODE_QUAD:
+	case MSPI_IO_MODE_QUAD_1_1_4:
+	case MSPI_IO_MODE_QUAD_1_4_4:
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_FRF_MASK,
+					XIP_CTRL_FRF_QUAD);
+		break;
+	case MSPI_IO_MODE_OCTAL:
+	case MSPI_IO_MODE_OCTAL_1_1_8:
+	case MSPI_IO_MODE_OCTAL_1_8_8:
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_FRF_MASK,
+					XIP_CTRL_FRF_OCTAL);
+		break;
+	default:
+		LOG_ERR("IO mode %d not supported", io_mode);
+		return false;
+	}
+
+	/* Transfer format used for Address and Instruction: */
+
+	switch (io_mode) {
+	case MSPI_IO_MODE_DUAL_1_1_2:
+	case MSPI_IO_MODE_QUAD_1_1_4:
+	case MSPI_IO_MODE_OCTAL_1_1_8:
+		/* - both sent in Standard SPI mode */
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
+					XIP_CTRL_TRANS_TYPE_TT0);
+		break;
+	case MSPI_IO_MODE_DUAL_1_2_2:
+	case MSPI_IO_MODE_QUAD_1_4_4:
+	case MSPI_IO_MODE_OCTAL_1_8_8:
+		/* - Instruction sent in Standard SPI mode,
+		 *   Address sent the same way as data
+		 */
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
+					XIP_CTRL_TRANS_TYPE_TT1);
+		break;
+	default:
+		/* - both sent the same way as data. */
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
+					XIP_CTRL_TRANS_TYPE_TT2);
+		break;
+	}
+
+	return true;
+}
+
+static bool apply_cmd_length(struct mspi_dw_data *dev_data, uint32_t cmd_length)
 {
 	switch (cmd_length) {
 	case 0:
-		*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_INST_L_MASK,
-					  SPI_CTRLR0_INST_L0);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_INST_L_MASK,
+						   SPI_CTRLR0_INST_L0);
 		break;
 	case 1:
-		*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_INST_L_MASK,
-					  SPI_CTRLR0_INST_L8);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_INST_L_MASK,
+						   SPI_CTRLR0_INST_L8);
 		break;
 	case 2:
-		*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_INST_L_MASK,
-					  SPI_CTRLR0_INST_L16);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_INST_L_MASK,
+						   SPI_CTRLR0_INST_L16);
 		break;
 	default:
 		LOG_ERR("Command length %d not supported", cmd_length);
-		return -EINVAL;
+		return false;
 	}
 
-	return 0;
+	return true;
 }
 
-static int apply_addr_length(uint32_t *spi_ctrlr0, uint32_t addr_length)
+static bool apply_xip_cmd_length(const struct mspi_dw_data *dev_data,
+				 uint32_t *xip_ctrl)
 {
-	*spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_ADDR_L_MASK, addr_length * 2);
+	uint8_t cmd_length = dev_data->xip_params_active.cmd_length;
 
-	return 0;
+	switch (cmd_length) {
+	case 0:
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_INST_L_MASK, XIP_CTRL_INST_L0);
+		break;
+	case 1:
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_INST_L_MASK, XIP_CTRL_INST_L8)
+			  |  XIP_CTRL_INST_EN_BIT;
+		break;
+	case 2:
+		*xip_ctrl |= FIELD_PREP(XIP_CTRL_INST_L_MASK, XIP_CTRL_INST_L16)
+			  |  XIP_CTRL_INST_EN_BIT;
+		break;
+	default:
+		LOG_ERR("Command length %d not supported", cmd_length);
+		return false;
+	}
+
+	return true;
+}
+
+static bool apply_addr_length(struct mspi_dw_data *dev_data,
+			      uint32_t addr_length)
+{
+	dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_ADDR_L_MASK,
+					   addr_length * 2);
+
+	return true;
+}
+
+static bool apply_xip_addr_length(const struct mspi_dw_data *dev_data,
+				  uint32_t *xip_ctrl)
+{
+	uint8_t addr_length = dev_data->xip_params_active.addr_length;
+
+	*xip_ctrl |= FIELD_PREP(XIP_CTRL_ADDR_L_MASK, addr_length * 2);
+
+	return true;
 }
 
 static int api_dev_config(const struct device *dev,
@@ -331,9 +483,9 @@ static int api_dev_config(const struct device *dev,
 {
 	const struct mspi_dw_config *dev_config = dev->config;
 	struct mspi_dw_data *dev_data = dev->data;
-	uint32_t ctrlr0 = 0;
-	uint32_t spi_ctrlr0 = 0;
-	int rc;
+	bool xip_enabled = dev_data->xip_enabled != 0;
+	unsigned int key;
+	uint32_t baudr = 0;
 
 	if (param_mask & MSPI_DEVICE_CONFIG_ENDIAN) {
 		if (cfg->endian != MSPI_XFER_BIG_ENDIAN) {
@@ -364,30 +516,43 @@ static int api_dev_config(const struct device *dev,
 	}
 
 	if (param_mask & MSPI_DEVICE_CONFIG_IO_MODE) {
-		rc = apply_io_mode(dev, cfg->io_mode, &ctrlr0, &spi_ctrlr0);
-		if (rc < 0) {
-			return rc;
+		dev_data->xip_io_mode_stored = cfg->io_mode;
+
+		if (!apply_io_mode(dev_data, cfg->io_mode)) {
+			return -EINVAL;
 		}
 	}
 
 	if (param_mask & MSPI_DEVICE_CONFIG_CPP) {
+		/* Make sure the new setting is compatible with the one used
+		 * for XIP if it is enabled.
+		 */
+		if (!dev_data->xip_enabled) {
+			dev_data->xip_cpp = cfg->cpp;
+		} else if (dev_data->xip_cpp != cfg->cpp) {
+			LOG_ERR("Conflict with configuration used for XIP.");
+			return -EINVAL;
+		}
+
+		dev_data->ctrlr0 &= ~(CTRLR0_SCPOL_BIT | CTRLR0_SCPH_BIT);
+
 		switch (cfg->cpp) {
 		default:
 		case MSPI_CPP_MODE_0:
-			ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 0) |
-				  FIELD_PREP(CTRLR0_SCPH_BIT,  0);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 0) |
+					    FIELD_PREP(CTRLR0_SCPH_BIT,  0);
 			break;
 		case MSPI_CPP_MODE_1:
-			ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 0) |
-				  FIELD_PREP(CTRLR0_SCPH_BIT,  1);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 0) |
+					    FIELD_PREP(CTRLR0_SCPH_BIT,  1);
 			break;
 		case MSPI_CPP_MODE_2:
-			ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 1) |
-				  FIELD_PREP(CTRLR0_SCPH_BIT,  0);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 1) |
+					    FIELD_PREP(CTRLR0_SCPH_BIT,  0);
 			break;
 		case MSPI_CPP_MODE_3:
-			ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 1) |
-				  FIELD_PREP(CTRLR0_SCPH_BIT,  1);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_SCPOL_BIT, 1) |
+					    FIELD_PREP(CTRLR0_SCPH_BIT,  1);
 			break;
 		}
 	}
@@ -401,7 +566,17 @@ static int api_dev_config(const struct device *dev,
 			return -EINVAL;
 		}
 
-		write_baudr(dev, dev_config->clock_frequency / cfg->freq);
+		/* Make sure the new setting is compatible with the one used
+		 * for XIP if it is enabled.
+		 */
+		if (!dev_data->xip_enabled) {
+			dev_data->xip_freq = cfg->freq;
+		} else if (dev_data->xip_freq != cfg->freq) {
+			LOG_ERR("Conflict with configuration used for XIP.");
+			return -EINVAL;
+		}
+
+		baudr = dev_config->clock_frequency / cfg->freq;
 	}
 
 	if (param_mask & MSPI_DEVICE_CONFIG_DATA_RATE) {
@@ -419,40 +594,46 @@ static int api_dev_config(const struct device *dev,
 		}
 	}
 
-	if (param_mask & MSPI_DEVICE_CONFIG_RX_DUMMY) {
-		dev_data->rx_dummy = cfg->rx_dummy;
-	}
-
-	if (param_mask & MSPI_DEVICE_CONFIG_TX_DUMMY) {
-		dev_data->tx_dummy = cfg->tx_dummy;
-	}
-
 	if (param_mask & MSPI_DEVICE_CONFIG_READ_CMD) {
-		dev_data->read_cmd = cfg->read_cmd;
+		dev_data->xip_params_stored.read_cmd = cfg->read_cmd;
 	}
-
 	if (param_mask & MSPI_DEVICE_CONFIG_WRITE_CMD) {
-		dev_data->write_cmd = cfg->write_cmd;
+		dev_data->xip_params_stored.write_cmd = cfg->write_cmd;
 	}
-
+	if (param_mask & MSPI_DEVICE_CONFIG_RX_DUMMY) {
+		dev_data->xip_params_stored.rx_dummy = cfg->rx_dummy;
+	}
 	if (param_mask & MSPI_DEVICE_CONFIG_CMD_LEN) {
-		dev_data->cmd_length = cfg->cmd_length;
+		dev_data->xip_params_stored.cmd_length = cfg->cmd_length;
 	}
-
 	if (param_mask & MSPI_DEVICE_CONFIG_ADDR_LEN) {
-		dev_data->addr_length = cfg->addr_length;
+		dev_data->xip_params_stored.addr_length = cfg->addr_length;
 	}
 
 	/* Always use Motorola SPI frame format. */
-	ctrlr0 |= FIELD_PREP(CTRLR0_FRF_MASK, CTRLR0_FRF_SPI);
+	dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_FRF_MASK, CTRLR0_FRF_SPI);
+	/* Enable clock stretching. */
+	dev_data->spi_ctrlr0 |= SPI_CTRLR0_CLK_STRETCH_EN_BIT;
 
-	spi_ctrlr0 |= SPI_CTRLR0_CLK_STRETCH_EN_BIT;
+	if (xip_enabled) {
+		key = irq_lock();
+		write_ssienr(dev, 0);
+	}
 
-	write_ctrlr0(dev, ctrlr0);
-	write_spi_ctrlr0(dev, spi_ctrlr0);
+	if (baudr) {
+		dev_data->baudr = baudr;
+		write_baudr(dev, dev_data->baudr);
+	}
+	write_ctrlr0(dev, dev_data->ctrlr0);
+	write_spi_ctrlr0(dev, dev_data->spi_ctrlr0);
+	write_ser(dev, BIT(dev_id->dev_idx));
+
+	if (xip_enabled) {
+		write_ssienr(dev, SSIENR_SSIC_EN_BIT);
+		irq_unlock(key);
+	}
 
 	dev_data->dev_id = *dev_id;
-	write_ser(dev, BIT(dev_id->dev_idx));
 
 	return 0;
 }
@@ -473,15 +654,14 @@ static void tx_control_field(const struct device *dev,
 	} while (shift);
 }
 
-static int start_next_packet(const struct device *dev,
-			     k_timeout_t timeout)
+static int start_next_packet(const struct device *dev, k_timeout_t timeout)
 {
 	const struct mspi_dw_config *dev_config = dev->config;
 	struct mspi_dw_data *dev_data = dev->data;
 	const struct mspi_xfer_packet *packet =
 		&dev_data->xfer.packets[dev_data->packets_done];
-	uint32_t ctrlr0 = read_ctrlr0(dev);
-	uint32_t spi_ctrlr0 = read_spi_ctrlr0(dev);
+	bool xip_enabled = dev_data->xip_enabled != 0;
+	unsigned int key;
 	uint8_t tx_fifo_threshold;
 	uint32_t imr;
 	int rc = 0;
@@ -499,32 +679,34 @@ static int start_next_packet(const struct device *dev,
 
 	dev_data->dummy_bytes = 0;
 
-	ctrlr0 &= ~CTRLR0_TMOD_MASK
-	       &  ~CTRLR0_DFS_MASK;
-	spi_ctrlr0 &= ~SPI_CTRLR0_WAIT_CYCLES_MASK;
+	dev_data->ctrlr0 &= ~CTRLR0_TMOD_MASK
+			 &  ~CTRLR0_DFS_MASK;
+
+	dev_data->spi_ctrlr0 &= ~SPI_CTRLR0_WAIT_CYCLES_MASK;
 
 	/* TODO: support receiving data in bigger frames when possible */
 	if (dev_data->standard_spi || packet->dir == MSPI_RX) {
 		dev_data->bytes_per_frame = 1;
-		ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 7);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 7);
 	} else {
 		if ((packet->num_bytes % 4) == 0) {
 			dev_data->bytes_per_frame = 4;
-			ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 31);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 31);
 		} else if ((packet->num_bytes % 2) == 0) {
 			dev_data->bytes_per_frame = 2;
-			ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 15);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 15);
 		} else {
 			dev_data->bytes_per_frame = 1;
-			ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 7);
+			dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_DFS_MASK, 7);
 		}
 	}
 
 	if (packet->dir == MSPI_TX || packet->num_bytes == 0) {
 		imr = IMR_TXEIM_BIT;
-		ctrlr0 |= FIELD_PREP(CTRLR0_TMOD_MASK, CTRLR0_TMOD_TX);
-		spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_WAIT_CYCLES_MASK,
-					 dev_data->xfer.tx_dummy);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_TMOD_MASK,
+					       CTRLR0_TMOD_TX);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_WAIT_CYCLES_MASK,
+						   dev_data->xfer.tx_dummy);
 
 		write_rxftlr(dev, 0);
 		tx_fifo_threshold = dev_config->tx_fifo_threshold;
@@ -543,16 +725,20 @@ static int start_next_packet(const struct device *dev,
 		if (dev_data->standard_spi &&
 		    (dev_data->xfer.cmd_length != 0 ||
 		     dev_data->xfer.addr_length != 0)) {
-			dev_data->to_discard = dev_data->xfer.cmd_length
-					     + dev_data->xfer.addr_length;
+			uint32_t rx_total;
+
+			dev_data->bytes_to_discard = dev_data->xfer.cmd_length
+						   + dev_data->xfer.addr_length;
+			rx_total = dev_data->bytes_to_discard
+				 + packet->num_bytes;
+
 			dev_data->dummy_bytes = packet->num_bytes;
 
 			imr = IMR_TXEIM_BIT | IMR_RXFIM_BIT;
 			tmod = CTRLR0_TMOD_TX_RX;
 			tx_fifo_threshold = dev_config->tx_fifo_threshold;
-			rx_fifo_threshold = MIN(
-				dev_data->to_discard + packet->num_bytes - 1,
-				dev_config->rx_fifo_threshold);
+			rx_fifo_threshold = MIN(rx_total - 1,
+						dev_config->rx_fifo_threshold);
 		} else {
 			imr = IMR_RXFIM_BIT;
 			tmod = CTRLR0_TMOD_RX;
@@ -561,20 +747,30 @@ static int start_next_packet(const struct device *dev,
 						dev_config->rx_fifo_threshold);
 		}
 
-		ctrlr0 |= FIELD_PREP(CTRLR0_TMOD_MASK, tmod);
-		spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_WAIT_CYCLES_MASK,
-					 dev_data->xfer.rx_dummy);
+		dev_data->ctrlr0 |= FIELD_PREP(CTRLR0_TMOD_MASK, tmod);
+		dev_data->spi_ctrlr0 |= FIELD_PREP(SPI_CTRLR0_WAIT_CYCLES_MASK,
+						   dev_data->xfer.rx_dummy);
 
 		write_rxftlr(dev, FIELD_PREP(RXFTLR_RFT_MASK,
 					     rx_fifo_threshold));
 	}
 
-	write_ctrlr0(dev, ctrlr0);
+	if (xip_enabled) {
+		key = irq_lock();
+		write_ssienr(dev, 0);
+	}
+
+	write_ctrlr0(dev, dev_data->ctrlr0);
 	write_ctrlr1(dev, packet->num_bytes > 0
 		? FIELD_PREP(CTRLR1_NDF_MASK,
 			     packet->num_bytes / dev_data->bytes_per_frame - 1)
 		: 0);
-	write_spi_ctrlr0(dev, spi_ctrlr0);
+	write_spi_ctrlr0(dev, dev_data->spi_ctrlr0);
+
+	if (xip_enabled) {
+		write_ssienr(dev, SSIENR_SSIC_EN_BIT);
+		irq_unlock(key);
+	}
 
 	if (dev_data->dev_id.ce.port) {
 		gpio_pin_set_dt(&dev_data->dev_id.ce, 1);
@@ -587,7 +783,7 @@ static int start_next_packet(const struct device *dev,
 		uint32_t start_level = tx_fifo_threshold;
 
 		if (dev_data->dummy_bytes) {
-			uint32_t tx_total = dev_data->to_discard
+			uint32_t tx_total = dev_data->bytes_to_discard
 					  + dev_data->dummy_bytes;
 
 			if (start_level > tx_total - 1) {
@@ -646,7 +842,16 @@ static int start_next_packet(const struct device *dev,
 	/* Disable the controller. This will immediately halt the transfer
 	 * if it hasn't finished yet.
 	 */
-	write_ssienr(dev, 0);
+	if (dev_data->xip_enabled) {
+		key = irq_lock();
+
+		write_ssienr(dev, 0);
+		write_ssienr(dev, SSIENR_SSIC_EN_BIT);
+
+		irq_unlock(key);
+	} else {
+		write_ssienr(dev, 0);
+	}
 
 	if (dev_data->dev_id.ce.port) {
 		gpio_pin_set_dt(&dev_data->dev_id.ce, 0);
@@ -660,26 +865,24 @@ static int api_transceive(const struct device *dev,
 			  const struct mspi_xfer *req)
 {
 	struct mspi_dw_data *dev_data = dev->data;
-	uint32_t spi_ctrlr0 = read_spi_ctrlr0(dev);
 	int rc;
+
+	if (dev_id->dev_idx != dev_data->dev_id.dev_idx) {
+		return -EINVAL;
+	}
 
 	/* TODO: add support for asynchronous transfers */
 	if (req->async) {
 		return -ENOTSUP;
 	}
 
-	spi_ctrlr0 &= ~SPI_CTRLR0_WAIT_CYCLES_MASK
-		   &  ~SPI_CTRLR0_INST_L_MASK
-		   &  ~SPI_CTRLR0_ADDR_L_MASK;
+	dev_data->spi_ctrlr0 &= ~SPI_CTRLR0_WAIT_CYCLES_MASK
+			     &  ~SPI_CTRLR0_INST_L_MASK
+			     &  ~SPI_CTRLR0_ADDR_L_MASK;
 
-	rc = apply_cmd_length(&spi_ctrlr0, req->cmd_length);
-	if (rc < 0) {
-		return rc;
-	}
-
-	rc = apply_addr_length(&spi_ctrlr0, req->addr_length);
-	if (rc < 0) {
-		return rc;
+	if (!apply_cmd_length(dev_data, req->cmd_length) ||
+	    !apply_addr_length(dev_data, req->addr_length)) {
+		return -EINVAL;
 	}
 
 	if (dev_data->standard_spi) {
@@ -693,8 +896,6 @@ static int api_transceive(const struct device *dev,
 		}
 	}
 
-	write_spi_ctrlr0(dev, spi_ctrlr0);
-
 	dev_data->xfer = *req;
 
 	for (dev_data->packets_done = 0;
@@ -705,6 +906,78 @@ static int api_transceive(const struct device *dev,
 			return rc;
 		}
 	}
+
+	return 0;
+}
+
+static int api_xip_config(const struct device *dev,
+			  const struct mspi_dev_id *dev_id,
+			  const struct mspi_xip_cfg *cfg)
+{
+	struct mspi_dw_data *dev_data = dev->data;
+	int rc;
+
+	if (dev_id->dev_idx != dev_data->dev_id.dev_idx) {
+		return -EINVAL;
+	}
+
+	if (!cfg->enable) {
+		rc = vendor_specific_xip_disable(dev, dev_id, cfg);
+		if (rc < 0) {
+			return rc;
+		}
+
+		dev_data->xip_enabled &= ~BIT(dev_id->dev_idx);
+
+		if (!dev_data->xip_enabled) {
+			write_ssienr(dev, 0);
+		}
+
+		return 0;
+	}
+
+	if (!dev_data->xip_enabled) {
+		uint32_t xip_ctrl = 0;
+
+		dev_data->xip_params_active = dev_data->xip_params_stored;
+		dev_data->xip_io_mode_active = dev_data->xip_io_mode_stored;
+
+		if (!apply_xip_io_mode(dev_data, &xip_ctrl) ||
+		    !apply_xip_cmd_length(dev_data, &xip_ctrl) ||
+		    !apply_xip_addr_length(dev_data, &xip_ctrl)) {
+			return -EINVAL;
+		}
+
+		xip_ctrl |= FIELD_PREP(XIP_CTRL_WAIT_CYCLES_MASK,
+				       dev_data->xip_params_active.rx_dummy);
+
+		write_xip_incr_inst(dev, dev_data->xip_params_active.read_cmd);
+		write_xip_wrap_inst(dev, dev_data->xip_params_active.read_cmd);
+		write_xip_ctrl(dev, xip_ctrl);
+	} else if (dev_data->xip_params_active.read_cmd !=
+		   dev_data->xip_params_stored.read_cmd ||
+		   dev_data->xip_params_active.write_cmd !=
+		   dev_data->xip_params_stored.write_cmd ||
+		   dev_data->xip_params_active.cmd_length !=
+		   dev_data->xip_params_stored.cmd_length ||
+		   dev_data->xip_params_active.addr_length !=
+		   dev_data->xip_params_stored.addr_length ||
+		   dev_data->xip_params_active.rx_dummy !=
+		   dev_data->xip_params_stored.rx_dummy ||
+		   dev_data->xip_io_mode_active !=
+		   dev_data->xip_io_mode_stored) {
+		LOG_ERR("Conflict with configuration already used for XIP.");
+		return -EINVAL;
+	}
+
+	rc = vendor_specific_xip_enable(dev, dev_id, cfg);
+	if (rc < 0) {
+		return rc;
+	}
+
+	write_ssienr(dev, SSIENR_SSIC_EN_BIT);
+
+	dev_data->xip_enabled |= BIT(dev_id->dev_idx);
 
 	return 0;
 }
@@ -740,11 +1013,9 @@ static int dev_init(const struct device *dev)
 
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 
-	VENDOR_SPECIFIC_INIT(dev);
+	vendor_specific_init(dev);
 
 	dev_config->irq_config();
-
-	write_ssienr(dev, 0);
 
 	dev_data->dev_id.dev_idx = INVALID_DEV_IDX;
 	k_sem_init(&dev_data->finished, 0, 1);
@@ -772,6 +1043,7 @@ static const struct mspi_driver_api drv_api = {
 	.dev_config         = api_dev_config,
 	.get_channel_status = api_get_channel_status,
 	.transceive         = api_transceive,
+	.xip_config         = api_xip_config,
 };
 
 #define MSPI_DW_INST_IRQ(idx, inst)					\
