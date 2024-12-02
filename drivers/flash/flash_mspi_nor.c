@@ -28,8 +28,8 @@ struct flash_mspi_nor_config {
 	const struct device *bus;
 	struct mspi_dev_id mspi_id;
 	struct mspi_dev_cfg mspi_cfg;
+	struct gpio_dt_spec reset;
 	uint32_t flash_size;
-	uint16_t page_size;
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
 	struct flash_pages_layout layout;
 #endif
@@ -38,20 +38,20 @@ struct flash_mspi_nor_config {
 
 static int acquire(const struct device *dev)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	int rc;
 
-	k_sem_take(&drv_data->acquired, K_FOREVER);
+	k_sem_take(&dev_data->acquired, K_FOREVER);
 
-	rc = pm_device_runtime_get(drv_config->bus);
+	rc = pm_device_runtime_get(dev_config->bus);
 	if (rc < 0) {
 		LOG_ERR("pm_device_runtime_get() failed: %d", rc);
 		return rc;
 	}
 
-	rc = mspi_dev_config(drv_config->bus, &drv_config->mspi_id,
-			     MSPI_DEVICE_CONFIG_ALL, &drv_config->mspi_cfg);
+	rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
+			     MSPI_DEVICE_CONFIG_ALL, &dev_config->mspi_cfg);
 	if (rc < 0) {
 		LOG_ERR("mspi_dev_config() failed: %d", rc);
 		return rc;
@@ -62,19 +62,19 @@ static int acquire(const struct device *dev)
 
 static void release(const struct device *dev)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 
-	(void)pm_device_runtime_put(drv_config->bus);
+	(void)pm_device_runtime_put(dev_config->bus);
 
-	k_sem_give(&drv_data->acquired);
+	k_sem_give(&dev_data->acquired);
 }
 
 static inline uint32_t dev_flash_size(const struct device *dev)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
 
-	return drv_config->flash_size;
+	return dev_config->flash_size;
 }
 
 static inline uint16_t dev_page_size(const struct device *dev)
@@ -85,8 +85,8 @@ static inline uint16_t dev_page_size(const struct device *dev)
 static int api_read(const struct device *dev, off_t addr, void *dest,
 		    size_t size)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	const uint32_t flash_size = dev_flash_size(dev);
 	int rc;
 
@@ -103,16 +103,16 @@ static int api_read(const struct device *dev, off_t addr, void *dest,
 		return rc;
 	}
 
-	drv_data->xfer.cmd_length  = 2;
-	drv_data->xfer.addr_length = 4;
-	drv_data->xfer.rx_dummy    = 20;
-	drv_data->packet.dir       = MSPI_RX;
-	drv_data->packet.cmd       = SPI_NOR_OCMD_RD;
-	drv_data->packet.address   = addr;
-	drv_data->packet.data_buf  = dest;
-	drv_data->packet.num_bytes = size;
-	rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-			     &drv_data->xfer);
+	dev_data->xfer.cmd_length  = 2;
+	dev_data->xfer.addr_length = 4;
+	dev_data->xfer.rx_dummy    = 20;
+	dev_data->packet.dir       = MSPI_RX;
+	dev_data->packet.cmd       = SPI_NOR_OCMD_RD;
+	dev_data->packet.address   = addr;
+	dev_data->packet.data_buf  = dest;
+	dev_data->packet.num_bytes = size;
+	rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+			     &dev_data->xfer);
 
 	release(dev);
 
@@ -126,22 +126,22 @@ static int api_read(const struct device *dev, off_t addr, void *dest,
 
 static int wait_until_ready(const struct device *dev, k_timeout_t poll_period)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	uint8_t status_reg;
 	int rc;
 
 	while (true) {
-		drv_data->xfer.cmd_length  = 2;
-		drv_data->xfer.addr_length = 4;
-		drv_data->xfer.rx_dummy    = 4;
-		drv_data->packet.dir       = MSPI_RX;
-		drv_data->packet.cmd       = SPI_NOR_OCMD_RDSR;
-		drv_data->packet.address   = 0;
-		drv_data->packet.data_buf  = &status_reg;
-		drv_data->packet.num_bytes = sizeof(status_reg);
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		dev_data->xfer.cmd_length  = 2;
+		dev_data->xfer.addr_length = 4;
+		dev_data->xfer.rx_dummy    = 4;
+		dev_data->packet.dir       = MSPI_RX;
+		dev_data->packet.cmd       = SPI_NOR_OCMD_RDSR;
+		dev_data->packet.address   = 0;
+		dev_data->packet.data_buf  = &status_reg;
+		dev_data->packet.num_bytes = sizeof(status_reg);
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			LOG_ERR("SPI_NOR_OCMD_RDSR xfer failed: %d", rc);
 			return rc;
@@ -159,8 +159,8 @@ static int wait_until_ready(const struct device *dev, k_timeout_t poll_period)
 static int api_write(const struct device *dev, off_t addr, const void *src,
 		     size_t size)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	const uint32_t flash_size = dev_flash_size(dev);
 	const uint16_t page_size = dev_page_size(dev);
 	int rc;
@@ -184,27 +184,27 @@ static int api_write(const struct device *dev, off_t addr, const void *src,
 		uint16_t page_left = page_size - page_offset;
 		uint16_t to_write = (uint16_t)MIN(size, page_left);
 
-		drv_data->xfer.cmd_length  = 2;
-		drv_data->xfer.tx_dummy    = 0;
-		drv_data->packet.dir       = MSPI_TX;
+		dev_data->xfer.cmd_length  = 2;
+		dev_data->xfer.tx_dummy    = 0;
+		dev_data->packet.dir       = MSPI_TX;
 
-		drv_data->xfer.addr_length = 0;
-		drv_data->packet.cmd       = SPI_NOR_OCMD_WREN;
-		drv_data->packet.num_bytes = 0;
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		dev_data->xfer.addr_length = 0;
+		dev_data->packet.cmd       = SPI_NOR_OCMD_WREN;
+		dev_data->packet.num_bytes = 0;
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			LOG_ERR("SPI_NOR_OCMD_WREN xfer failed: %d", rc);
 			break;
 		}
 
-		drv_data->xfer.addr_length = 4;
-		drv_data->packet.cmd       = SPI_NOR_OCMD_PAGE_PRG;
-		drv_data->packet.address   = addr;
-		drv_data->packet.data_buf  = (uint8_t *)src;
-		drv_data->packet.num_bytes = to_write;
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		dev_data->xfer.addr_length = 4;
+		dev_data->packet.cmd       = SPI_NOR_OCMD_PAGE_PRG;
+		dev_data->packet.address   = addr;
+		dev_data->packet.data_buf  = (uint8_t *)src;
+		dev_data->packet.num_bytes = to_write;
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			LOG_ERR("SPI_NOR_OCMD_PAGE_PRG xfer failed: %d", rc);
 			break;
@@ -227,8 +227,8 @@ static int api_write(const struct device *dev, off_t addr, const void *src,
 
 static int api_erase(const struct device *dev, off_t addr, size_t size)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	const uint32_t flash_size = dev_flash_size(dev);
 	int rc = 0;
 
@@ -250,15 +250,15 @@ static int api_erase(const struct device *dev, off_t addr, size_t size)
 	}
 
 	while (size > 0) {
-		drv_data->xfer.cmd_length  = 2;
-		drv_data->xfer.tx_dummy    = 0;
-		drv_data->packet.dir       = MSPI_TX;
-		drv_data->packet.num_bytes = 0;
+		dev_data->xfer.cmd_length  = 2;
+		dev_data->xfer.tx_dummy    = 0;
+		dev_data->packet.dir       = MSPI_TX;
+		dev_data->packet.num_bytes = 0;
 
-		drv_data->xfer.addr_length = 0;
-		drv_data->packet.cmd       = SPI_NOR_OCMD_WREN;
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		dev_data->xfer.addr_length = 0;
+		dev_data->packet.cmd       = SPI_NOR_OCMD_WREN;
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			LOG_ERR("SPI_NOR_OCMD_WREN xfer failed: %d", rc);
 			break;
@@ -266,24 +266,24 @@ static int api_erase(const struct device *dev, off_t addr, size_t size)
 
 		if (size == flash_size) {
 			/* Chip erase. */
-			drv_data->xfer.addr_length = 0;
-			drv_data->packet.cmd       = SPI_NOR_OCMD_CE;
+			dev_data->xfer.addr_length = 0;
+			dev_data->packet.cmd       = SPI_NOR_OCMD_CE;
 
 			size -= flash_size;
 		} else {
 			/* Sector erase. */
-			drv_data->xfer.addr_length = 4;
-			drv_data->packet.cmd       = SPI_NOR_OCMD_SE;
-			drv_data->packet.address   = addr;
+			dev_data->xfer.addr_length = 4;
+			dev_data->packet.cmd       = SPI_NOR_OCMD_SE;
+			dev_data->packet.address   = addr;
 
 			addr += SPI_NOR_SECTOR_SIZE;
 			size -= SPI_NOR_SECTOR_SIZE;
 		}
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			LOG_ERR("Erase command 0x%02x xfer failed: %d",
-				drv_data->packet.cmd, rc);
+				dev_data->packet.cmd, rc);
 			break;
 		}
 
@@ -313,20 +313,20 @@ struct flash_parameters *api_get_parameters(const struct device *dev)
 
 static int read_jedec_id(const struct device *dev, uint8_t *id)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	int rc;
 
-	drv_data->xfer.cmd_length  = 2;
-	drv_data->xfer.addr_length = 4;
-	drv_data->xfer.rx_dummy    = 4;
-	drv_data->packet.dir       = MSPI_RX;
-	drv_data->packet.cmd       = JESD216_OCMD_READ_ID;
-	drv_data->packet.address   = 0;
-	drv_data->packet.data_buf  = id;
-	drv_data->packet.num_bytes = JESD216_READ_ID_LEN;
-	rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-			     &drv_data->xfer);
+	dev_data->xfer.cmd_length  = 2;
+	dev_data->xfer.addr_length = 4;
+	dev_data->xfer.rx_dummy    = 4;
+	dev_data->packet.dir       = MSPI_RX;
+	dev_data->packet.cmd       = JESD216_OCMD_READ_ID;
+	dev_data->packet.address   = 0;
+	dev_data->packet.data_buf  = id;
+	dev_data->packet.num_bytes = JESD216_READ_ID_LEN;
+	rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+			     &dev_data->xfer);
 	if (rc < 0) {
 		printk("mspi_transceive() failed: %d\n", rc);
 		return rc;
@@ -340,9 +340,9 @@ static void api_page_layout(const struct device *dev,
 			     const struct flash_pages_layout **layout,
 			     size_t *layout_size)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
 
-	*layout = &drv_config->layout;
+	*layout = &dev_config->layout;
 	*layout_size = 1;
 }
 #endif /* CONFIG_FLASH_PAGE_LAYOUT */
@@ -351,8 +351,8 @@ static void api_page_layout(const struct device *dev,
 static int api_sfdp_read(const struct device *dev, off_t addr, void *dest,
 			 size_t size)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
 	int rc;
 
 	if (size == 0) {
@@ -364,16 +364,16 @@ static int api_sfdp_read(const struct device *dev, off_t addr, void *dest,
 		return rc;
 	}
 
-	drv_data->xfer.cmd_length  = 2;
-	drv_data->xfer.addr_length = 4;
-	drv_data->xfer.rx_dummy    = 20;
-	drv_data->packet.dir       = MSPI_RX;
-	drv_data->packet.cmd       = JESD216_OCMD_READ_SFDP;
-	drv_data->packet.address   = addr;
-	drv_data->packet.data_buf  = dest;
-	drv_data->packet.num_bytes = size;
-	rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-			     &drv_data->xfer);
+	dev_data->xfer.cmd_length  = 2;
+	dev_data->xfer.addr_length = 4;
+	dev_data->xfer.rx_dummy    = 20;
+	dev_data->packet.dir       = MSPI_RX;
+	dev_data->packet.cmd       = JESD216_OCMD_READ_SFDP;
+	dev_data->packet.address   = addr;
+	dev_data->packet.data_buf  = dest;
+	dev_data->packet.num_bytes = size;
+	rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+			     &dev_data->xfer);
 	if (rc < 0) {
 		printk("JESD216_OCMD_READ_SFDP xfer failed: %d\n", rc);
 		return rc;
@@ -418,43 +418,57 @@ static int dev_pm_action_cb(const struct device *dev,
 
 static int drv_init(const struct device *dev)
 {
-	const struct flash_mspi_nor_config *drv_config = dev->config;
-	struct flash_mspi_nor_data *drv_data = dev->data;
-	struct mspi_dev_cfg init_dev_cfg = drv_config->mspi_cfg;
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
+	struct mspi_dev_cfg init_dev_cfg = dev_config->mspi_cfg;
 	uint8_t id[JESD216_READ_ID_LEN] = {0};
 	int rc;
 
-	if (!device_is_ready(drv_config->bus)) {
-		LOG_ERR("Device %s is not ready", drv_config->bus->name);
+	if (!device_is_ready(dev_config->bus)) {
+		LOG_ERR("Device %s is not ready", dev_config->bus->name);
 		return -ENODEV;
+	}
+
+	if (dev_config->reset.port) {
+		if (!gpio_is_ready_dt(&dev_config->reset)) {
+			LOG_ERR("Device %s is not ready",
+				dev_config->reset.port->name);
+			return -ENODEV;
+		}
+
+		if (gpio_pin_configure_dt(&dev_config->reset,
+					  GPIO_OUTPUT_ACTIVE) < 0 ||
+		    gpio_pin_set_dt(&dev_config->reset, 0) < 0) {
+			return -EIO;
+		}
 	}
 
 	init_dev_cfg.freq = MHZ(1);
 	init_dev_cfg.io_mode = MSPI_IO_MODE_SINGLE;
 
-	rc = mspi_dev_config(drv_config->bus, &drv_config->mspi_id,
+	rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
 			     MSPI_DEVICE_CONFIG_ALL, &init_dev_cfg);
 	if (rc < 0) {
 		LOG_ERR("Failed to set initial device config: %d", rc);
 		return rc;
 	}
 
-	drv_data->xfer.xfer_mode  = MSPI_PIO;
-	drv_data->xfer.packets    = &drv_data->packet;
-	drv_data->xfer.num_packet = 1;
-	drv_data->xfer.timeout    = 10;
+	dev_data->xfer.xfer_mode  = MSPI_PIO;
+	dev_data->xfer.packets    = &dev_data->packet;
+	dev_data->xfer.num_packet = 1;
+	dev_data->xfer.timeout    = 10;
 
-	drv_data->xfer.cmd_length  = 1;
-	drv_data->xfer.addr_length = 0;
-	drv_data->xfer.tx_dummy    = 0;
-	drv_data->xfer.rx_dummy    = 0;
+	dev_data->xfer.cmd_length  = 1;
+	dev_data->xfer.addr_length = 0;
+	dev_data->xfer.tx_dummy    = 0;
+	dev_data->xfer.rx_dummy    = 0;
 
-	drv_data->packet.dir       = MSPI_RX;
-	drv_data->packet.cmd       = JESD216_CMD_READ_ID;
-	drv_data->packet.data_buf  = id;
-	drv_data->packet.num_bytes = sizeof(id);
-	rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-			     &drv_data->xfer);
+	dev_data->packet.dir       = MSPI_RX;
+	dev_data->packet.cmd       = JESD216_CMD_READ_ID;
+	dev_data->packet.data_buf  = id;
+	dev_data->packet.num_bytes = sizeof(id);
+	rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+			     &dev_data->xfer);
 	if (rc < 0) {
 		LOG_ERR("Failed to read JEDEC ID in single line mode: %d", rc);
 		return rc;
@@ -464,34 +478,34 @@ static int drv_init(const struct device *dev)
 	 * If the read ID does not match the one from DTS, assume the flash
 	 * is already in the Octa I/O mode, so switching it is not needed.
 	 */
-	if (memcmp(id, drv_config->jedec_id, sizeof(id)) == 0) {
+	if (memcmp(id, dev_config->jedec_id, sizeof(id)) == 0) {
 		static const uint8_t enable_sopi[] = { 0x01 };
 
-		drv_data->packet.dir       = MSPI_TX;
-		drv_data->packet.cmd       = SPI_NOR_CMD_WREN;
-		drv_data->packet.num_bytes = 0;
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		dev_data->packet.dir       = MSPI_TX;
+		dev_data->packet.cmd       = SPI_NOR_CMD_WREN;
+		dev_data->packet.num_bytes = 0;
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			LOG_ERR("SPI_NOR_CMD_WREN xfer failed: %d", rc);
 			return rc;
 		}
 
-		drv_data->xfer.addr_length = 4;
-		drv_data->packet.cmd       = SPI_NOR_CMD_WR_CFGREG2;
-		drv_data->packet.address   = 0;
-		drv_data->packet.data_buf  = (uint8_t *)&enable_sopi;
-		drv_data->packet.num_bytes = sizeof(enable_sopi);
-		rc = mspi_transceive(drv_config->bus, &drv_config->mspi_id,
-				     &drv_data->xfer);
+		dev_data->xfer.addr_length = 4;
+		dev_data->packet.cmd       = SPI_NOR_CMD_WR_CFGREG2;
+		dev_data->packet.address   = 0;
+		dev_data->packet.data_buf  = (uint8_t *)&enable_sopi;
+		dev_data->packet.num_bytes = sizeof(enable_sopi);
+		rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id,
+				     &dev_data->xfer);
 		if (rc < 0) {
 			printk("SPI_NOR_CMD_WR_CFGREG2 xfer failed: %d\n", rc);
 			return rc;
 		}
 	}
 
-	rc = mspi_dev_config(drv_config->bus, &drv_config->mspi_id,
-			     MSPI_DEVICE_CONFIG_ALL, &drv_config->mspi_cfg);
+	rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
+			     MSPI_DEVICE_CONFIG_ALL, &dev_config->mspi_cfg);
 	if (rc < 0) {
 		LOG_ERR("Failed to set device config: %d", rc);
 		return rc;
@@ -502,17 +516,17 @@ static int drv_init(const struct device *dev)
 		return rc;
 	}
 
-	if (memcmp(id, drv_config->jedec_id, sizeof(id)) != 0) {
+	if (memcmp(id, dev_config->jedec_id, sizeof(id)) != 0) {
 		LOG_ERR("JEDEC ID mismatch, read: %02x %02x %02x, "
 			"expected: %02x %02x %02x",
 			id[0], id[1], id[2],
-			drv_config->jedec_id[0],
-			drv_config->jedec_id[1],
-			drv_config->jedec_id[2]);
+			dev_config->jedec_id[0],
+			dev_config->jedec_id[1],
+			dev_config->jedec_id[2]);
 		return -ENODEV;
 	}
 
-	k_sem_init(&drv_data->acquired, 1, K_SEM_MAX_LIMIT);
+	k_sem_init(&dev_data->acquired, 1, K_SEM_MAX_LIMIT);
 
 	return pm_device_driver_init(dev, dev_pm_action_cb);
 }
@@ -543,6 +557,8 @@ static const struct flash_driver_api drv_api = {
 		.bus = DEVICE_DT_GET(DT_INST_BUS(inst)),		\
 		.mspi_id = MSPI_DEVICE_ID_DT_INST(inst),		\
 		.mspi_cfg = MSPI_DEVICE_CONFIG_DT_INST(inst),		\
+		.reset = GPIO_DT_SPEC_INST_GET_OR(inst,			\
+						  reset_gpios, {0}),	\
 		.flash_size = FLASH_SIZE_INST(inst),			\
 	IF_ENABLED(CONFIG_FLASH_PAGE_LAYOUT,				\
 		(.layout = {						\
