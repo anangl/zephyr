@@ -26,8 +26,15 @@ struct xip_params {
 	uint32_t read_cmd;
 	uint32_t write_cmd;
 	uint16_t rx_dummy;
+	uint16_t tx_dummy;
 	uint8_t cmd_length;
 	uint8_t addr_length;
+	enum mspi_io_mode io_mode;
+};
+
+struct xip_ctrl {
+	uint32_t read;
+	uint32_t write;
 };
 
 struct mspi_dw_data {
@@ -43,8 +50,6 @@ struct mspi_dw_data {
 	struct xip_params xip_params_stored;
 	struct xip_params xip_params_active;
 	uint16_t xip_enabled;
-	enum mspi_io_mode xip_io_mode_stored;
-	enum mspi_io_mode xip_io_mode_active;
 	enum mspi_cpp_mode xip_cpp;
 
 	uint16_t dummy_bytes;
@@ -93,9 +98,12 @@ DEFINE_MM_REG_RD(isr,		0x30)
 DEFINE_MM_REG_RD_WR(dr,		0x60)
 DEFINE_MM_REG_WR(spi_ctrlr0,	0xf4)
 
-DEFINE_MM_REG_WR(xip_incr_inst,	0x100)
-DEFINE_MM_REG_WR(xip_wrap_inst,	0x104)
-DEFINE_MM_REG_WR(xip_ctrl,	0x108)
+DEFINE_MM_REG_WR(xip_incr_inst,		0x100)
+DEFINE_MM_REG_WR(xip_wrap_inst,		0x104)
+DEFINE_MM_REG_WR(xip_ctrl,		0x108)
+DEFINE_MM_REG_WR(xip_write_incr_inst,	0x140)
+DEFINE_MM_REG_WR(xip_write_wrap_inst,	0x144)
+DEFINE_MM_REG_WR(xip_write_ctrl,	0x148)
 
 static void tx_data(const struct device *dev,
 		    const struct mspi_xfer_packet *packet)
@@ -345,9 +353,9 @@ static bool apply_io_mode(struct mspi_dw_data *dev_data,
 }
 
 static bool apply_xip_io_mode(const struct mspi_dw_data *dev_data,
-			      uint32_t *xip_ctrl)
+			      struct xip_ctrl *ctrl)
 {
-	enum mspi_io_mode io_mode = dev_data->xip_io_mode_active;
+	enum mspi_io_mode io_mode = dev_data->xip_params_active.io_mode;
 
 	/* Frame format used for transferring data. */
 
@@ -360,20 +368,26 @@ static bool apply_xip_io_mode(const struct mspi_dw_data *dev_data,
 	case MSPI_IO_MODE_DUAL:
 	case MSPI_IO_MODE_DUAL_1_1_2:
 	case MSPI_IO_MODE_DUAL_1_2_2:
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_FRF_MASK,
-					XIP_CTRL_FRF_DUAL);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_FRF_MASK,
+					 XIP_CTRL_FRF_DUAL);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_FRF_MASK,
+					  XIP_WRITE_CTRL_FRF_DUAL);
 		break;
 	case MSPI_IO_MODE_QUAD:
 	case MSPI_IO_MODE_QUAD_1_1_4:
 	case MSPI_IO_MODE_QUAD_1_4_4:
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_FRF_MASK,
-					XIP_CTRL_FRF_QUAD);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_FRF_MASK,
+					 XIP_CTRL_FRF_QUAD);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_FRF_MASK,
+					  XIP_WRITE_CTRL_FRF_QUAD);
 		break;
 	case MSPI_IO_MODE_OCTAL:
 	case MSPI_IO_MODE_OCTAL_1_1_8:
 	case MSPI_IO_MODE_OCTAL_1_8_8:
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_FRF_MASK,
-					XIP_CTRL_FRF_OCTAL);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_FRF_MASK,
+					 XIP_CTRL_FRF_OCTAL);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_FRF_MASK,
+					  XIP_WRITE_CTRL_FRF_OCTAL);
 		break;
 	default:
 		LOG_ERR("IO mode %d not supported", io_mode);
@@ -387,8 +401,10 @@ static bool apply_xip_io_mode(const struct mspi_dw_data *dev_data,
 	case MSPI_IO_MODE_QUAD_1_1_4:
 	case MSPI_IO_MODE_OCTAL_1_1_8:
 		/* - both sent in Standard SPI mode */
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
-					XIP_CTRL_TRANS_TYPE_TT0);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
+					 XIP_CTRL_TRANS_TYPE_TT0);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_TRANS_TYPE_MASK,
+					  XIP_WRITE_CTRL_TRANS_TYPE_TT0);
 		break;
 	case MSPI_IO_MODE_DUAL_1_2_2:
 	case MSPI_IO_MODE_QUAD_1_4_4:
@@ -396,13 +412,17 @@ static bool apply_xip_io_mode(const struct mspi_dw_data *dev_data,
 		/* - Instruction sent in Standard SPI mode,
 		 *   Address sent the same way as data
 		 */
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
-					XIP_CTRL_TRANS_TYPE_TT1);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
+					 XIP_CTRL_TRANS_TYPE_TT1);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_TRANS_TYPE_MASK,
+					  XIP_WRITE_CTRL_TRANS_TYPE_TT1);
 		break;
 	default:
 		/* - both sent the same way as data. */
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
-					XIP_CTRL_TRANS_TYPE_TT2);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_TRANS_TYPE_MASK,
+					 XIP_CTRL_TRANS_TYPE_TT2);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_TRANS_TYPE_MASK,
+					  XIP_WRITE_CTRL_TRANS_TYPE_TT2);
 		break;
 	}
 
@@ -433,21 +453,30 @@ static bool apply_cmd_length(struct mspi_dw_data *dev_data, uint32_t cmd_length)
 }
 
 static bool apply_xip_cmd_length(const struct mspi_dw_data *dev_data,
-				 uint32_t *xip_ctrl)
+				 struct xip_ctrl *ctrl)
 {
 	uint8_t cmd_length = dev_data->xip_params_active.cmd_length;
 
 	switch (cmd_length) {
 	case 0:
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_INST_L_MASK, XIP_CTRL_INST_L0);
+		ctrl->read |= FIELD_PREP(XIP_CTRL_INST_L_MASK,
+					 XIP_CTRL_INST_L0);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_INST_L_MASK,
+					  XIP_WRITE_CTRL_INST_L0);
 		break;
 	case 1:
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_INST_L_MASK, XIP_CTRL_INST_L8)
-			  |  XIP_CTRL_INST_EN_BIT;
+		ctrl->read |= XIP_CTRL_INST_EN_BIT
+			   |  FIELD_PREP(XIP_CTRL_INST_L_MASK,
+					 XIP_CTRL_INST_L8);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_INST_L_MASK,
+					  XIP_WRITE_CTRL_INST_L8);
 		break;
 	case 2:
-		*xip_ctrl |= FIELD_PREP(XIP_CTRL_INST_L_MASK, XIP_CTRL_INST_L16)
-			  |  XIP_CTRL_INST_EN_BIT;
+		ctrl->read |= XIP_CTRL_INST_EN_BIT
+			   |  FIELD_PREP(XIP_CTRL_INST_L_MASK,
+					 XIP_CTRL_INST_L16);
+		ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_INST_L_MASK,
+					  XIP_WRITE_CTRL_INST_L16);
 		break;
 	default:
 		LOG_ERR("Command length %d not supported", cmd_length);
@@ -467,11 +496,12 @@ static bool apply_addr_length(struct mspi_dw_data *dev_data,
 }
 
 static bool apply_xip_addr_length(const struct mspi_dw_data *dev_data,
-				  uint32_t *xip_ctrl)
+				  struct xip_ctrl *ctrl)
 {
 	uint8_t addr_length = dev_data->xip_params_active.addr_length;
 
-	*xip_ctrl |= FIELD_PREP(XIP_CTRL_ADDR_L_MASK, addr_length * 2);
+	ctrl->read |= FIELD_PREP(XIP_CTRL_ADDR_L_MASK, addr_length * 2);
+	ctrl->write |= FIELD_PREP(XIP_WRITE_CTRL_ADDR_L_MASK, addr_length * 2);
 
 	return true;
 }
@@ -516,7 +546,7 @@ static int api_dev_config(const struct device *dev,
 	}
 
 	if (param_mask & MSPI_DEVICE_CONFIG_IO_MODE) {
-		dev_data->xip_io_mode_stored = cfg->io_mode;
+		dev_data->xip_params_stored.io_mode = cfg->io_mode;
 
 		if (!apply_io_mode(dev_data, cfg->io_mode)) {
 			return -EINVAL;
@@ -602,6 +632,9 @@ static int api_dev_config(const struct device *dev,
 	}
 	if (param_mask & MSPI_DEVICE_CONFIG_RX_DUMMY) {
 		dev_data->xip_params_stored.rx_dummy = cfg->rx_dummy;
+	}
+	if (param_mask & MSPI_DEVICE_CONFIG_TX_DUMMY) {
+		dev_data->xip_params_stored.tx_dummy = cfg->tx_dummy;
 	}
 	if (param_mask & MSPI_DEVICE_CONFIG_CMD_LEN) {
 		dev_data->xip_params_stored.cmd_length = cfg->cmd_length;
@@ -937,23 +970,28 @@ static int api_xip_config(const struct device *dev,
 	}
 
 	if (!dev_data->xip_enabled) {
-		uint32_t xip_ctrl = 0;
+		struct xip_params *params = &dev_data->xip_params_active;
+		struct xip_ctrl ctrl = {0};
 
-		dev_data->xip_params_active = dev_data->xip_params_stored;
-		dev_data->xip_io_mode_active = dev_data->xip_io_mode_stored;
+		*params = dev_data->xip_params_stored;
 
-		if (!apply_xip_io_mode(dev_data, &xip_ctrl) ||
-		    !apply_xip_cmd_length(dev_data, &xip_ctrl) ||
-		    !apply_xip_addr_length(dev_data, &xip_ctrl)) {
+		if (!apply_xip_io_mode(dev_data, &ctrl) ||
+		    !apply_xip_cmd_length(dev_data, &ctrl) ||
+		    !apply_xip_addr_length(dev_data, &ctrl)) {
 			return -EINVAL;
 		}
 
-		xip_ctrl |= FIELD_PREP(XIP_CTRL_WAIT_CYCLES_MASK,
-				       dev_data->xip_params_active.rx_dummy);
+		ctrl.read |= FIELD_PREP(XIP_CTRL_WAIT_CYCLES_MASK,
+					params->rx_dummy);
+		ctrl.write |= FIELD_PREP(XIP_WRITE_CTRL_WAIT_CYCLES_MASK,
+					 params->tx_dummy);
 
-		write_xip_incr_inst(dev, dev_data->xip_params_active.read_cmd);
-		write_xip_wrap_inst(dev, dev_data->xip_params_active.read_cmd);
-		write_xip_ctrl(dev, xip_ctrl);
+		write_xip_incr_inst(dev, params->read_cmd);
+		write_xip_wrap_inst(dev, params->read_cmd);
+		write_xip_ctrl(dev, ctrl.read);
+		write_xip_write_incr_inst(dev, params->write_cmd);
+		write_xip_write_wrap_inst(dev, params->write_cmd);
+		write_xip_write_ctrl(dev, ctrl.write);
 	} else if (dev_data->xip_params_active.read_cmd !=
 		   dev_data->xip_params_stored.read_cmd ||
 		   dev_data->xip_params_active.write_cmd !=
@@ -964,8 +1002,8 @@ static int api_xip_config(const struct device *dev,
 		   dev_data->xip_params_stored.addr_length ||
 		   dev_data->xip_params_active.rx_dummy !=
 		   dev_data->xip_params_stored.rx_dummy ||
-		   dev_data->xip_io_mode_active !=
-		   dev_data->xip_io_mode_stored) {
+		   dev_data->xip_params_active.tx_dummy !=
+		   dev_data->xip_params_stored.tx_dummy) {
 		LOG_ERR("Conflict with configuration already used for XIP.");
 		return -EINVAL;
 	}
