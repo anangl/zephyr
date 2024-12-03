@@ -28,6 +28,7 @@ struct flash_mspi_nor_config {
 	const struct device *bus;
 	struct mspi_dev_id mspi_id;
 	struct mspi_dev_cfg mspi_cfg;
+	struct mspi_xip_cfg xip_cfg;
 	struct gpio_dt_spec reset;
 	uint32_t flash_size;
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
@@ -526,6 +527,15 @@ static int drv_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+	/* Enable XIP access for this chip if specified so in DT. */
+	if (dev_config->xip_cfg.enable) {
+		rc = mspi_xip_config(dev_config->bus, &dev_config->mspi_id,
+				     &dev_config->xip_cfg);
+		if (rc < 0) {
+			return rc;
+		}
+	}
+
 	k_sem_init(&dev_data->acquired, 1, K_SEM_MAX_LIMIT);
 
 	return pm_device_driver_init(dev, dev_pm_action_cb);
@@ -557,6 +567,7 @@ static const struct flash_driver_api drv_api = {
 		.bus = DEVICE_DT_GET(DT_INST_BUS(inst)),		\
 		.mspi_id = MSPI_DEVICE_ID_DT_INST(inst),		\
 		.mspi_cfg = MSPI_DEVICE_CONFIG_DT_INST(inst),		\
+		.xip_cfg = MSPI_XIP_CONFIG_DT_INST(inst),		\
 		.reset = GPIO_DT_SPEC_INST_GET_OR(inst,			\
 						  reset_gpios, {0}),	\
 		.flash_size = FLASH_SIZE_INST(inst),			\
