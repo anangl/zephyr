@@ -5,3 +5,5 @@ config MSPI_DW
 	bool "DesignWare SSI controller driver"
 	default y
 	depends on DT_HAS_SNPS_DESIGNWARE_SSI_ENABLED
+	select PINCTRL if $(dt_compat_any_has_prop,$(DT_COMPAT_SNPS_DESIGNWARE_SSI),pinctrl-0)
+	imply MSPI_XIP

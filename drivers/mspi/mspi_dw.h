@@ -4,12 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_DRIVERS_MSPI_MSPI_DW_H_
-#define ZEPHYR_DRIVERS_MSPI_MSPI_DW_H_
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+/*
+ * This file is a part of mspi_dw.c extracted only for clarity.
+ * It is not supposed to be included by any file other than mspi_dw.c.
+ */
 
 /* CTRLR0 - Control Register 0 */
 #define CTRLR0_SPI_FRF_MASK	GENMASK(23, 22)
@@ -167,7 +165,7 @@ extern "C" {
 #define XIP_WRITE_CTRL_FRF_OCTAL	3UL
 
 /* Register access helpers. */
-#define USES_AUX_REG(inst) + DT_INST_PROP(inst, aux_reg)
+#define USES_AUX_REG(inst) + DT_INST_PROP(inst, aux_reg_enable)
 #define AUX_REG_INSTANCES (0 DT_INST_FOREACH_STATUS_OKAY(USES_AUX_REG))
 #define BASE_ADDR(dev) (mm_reg_t)DEVICE_MMIO_GET(dev)
 
@@ -221,7 +219,7 @@ static void reg_write(uint32_t data, const struct device *dev, uint32_t off)
 	uint32_t (*read)(const struct device *dev, uint32_t off); \
 	void (*write)(uint32_t data, const struct device *dev, uint32_t off)
 #define DEFINE_REG_ACCESS(inst) \
-	COND_CODE_1(DT_INST_PROP(inst, aux_reg), \
+	COND_CODE_1(DT_INST_PROP(inst, aux_reg_enable), \
 		(.read = aux_reg_read, \
 		.write = aux_reg_write,), \
 		(.read = reg_read, \
@@ -239,9 +237,3 @@ static void reg_write(uint32_t data, const struct device *dev, uint32_t off)
 		dev_config->write(data, dev, off); \
 	}
 #endif
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* ZEPHYR_DRIVERS_MSPI_MSPI_DW_H_ */

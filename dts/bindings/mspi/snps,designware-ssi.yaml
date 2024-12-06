@@ -14,7 +14,7 @@ properties:
   interrupts:
     required: true
 
-  aux-reg:
+  aux-reg-enable:
     type: boolean
     description: |
       Activates auxiliary register access that is needed on some platforms.
