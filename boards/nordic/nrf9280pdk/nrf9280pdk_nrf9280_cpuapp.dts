@@ -244,12 +244,9 @@ ipc0: &cpuapp_cpurad_ipc {
 
 &exmif {
 	pinctrl-0 = <&exmif_default>;
-	pinctrl-names = "default";
+	pinctrl-1 = <&exmif_sleep>;
+	pinctrl-names = "default", "sleep";
 	status = "okay";
-	/* Hardware control of CS0 cannot be used until nrf-regtool is updated.
-	 * Use GPIO instead for now.
-	 */
-	ce-gpios = <&gpio6 3 GPIO_ACTIVE_LOW>;
 
 	mx25uw63: mx25uw6345g@0 {
 		compatible = "jedec,mspi-nor";

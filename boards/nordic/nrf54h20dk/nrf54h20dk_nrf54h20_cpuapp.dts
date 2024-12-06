@@ -257,7 +257,8 @@ ipc0: &cpuapp_cpurad_ipc {
 
 &exmif {
 	pinctrl-0 = <&exmif_default>;
-	pinctrl-names = "default";
+	pinctrl-1 = <&exmif_sleep>;
+	pinctrl-names = "default", "sleep";
 	status = "okay";
 
 	mx25uw63: mx25uw6345g@0 {
