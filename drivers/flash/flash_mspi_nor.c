@@ -7,14 +7,14 @@
 #define DT_DRV_COMPAT jedec_mspi_nor
 
 #include <zephyr/drivers/flash.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/mspi.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/pm/device_runtime.h>
 
-#include "spi_nor.h"
 #include "jesd216.h"
-#include "flash_priv.h"
+#include "spi_nor.h"
 
 LOG_MODULE_REGISTER(flash_mspi_nor, CONFIG_FLASH_LOG_LEVEL);
 
@@ -28,7 +28,9 @@ struct flash_mspi_nor_config {
 	const struct device *bus;
 	struct mspi_dev_id mspi_id;
 	struct mspi_dev_cfg mspi_cfg;
+#if defined(CONFIG_MSPI_XIP)
 	struct mspi_xip_cfg xip_cfg;
+#endif
 	struct gpio_dt_spec reset;
 	uint32_t flash_size;
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
@@ -417,32 +419,13 @@ static int dev_pm_action_cb(const struct device *dev,
 	return 0;
 }
 
-static int drv_init(const struct device *dev)
+static int flash_chip_init(const struct device *dev)
 {
 	const struct flash_mspi_nor_config *dev_config = dev->config;
 	struct flash_mspi_nor_data *dev_data = dev->data;
 	struct mspi_dev_cfg init_dev_cfg = dev_config->mspi_cfg;
 	uint8_t id[JESD216_READ_ID_LEN] = {0};
 	int rc;
-
-	if (!device_is_ready(dev_config->bus)) {
-		LOG_ERR("Device %s is not ready", dev_config->bus->name);
-		return -ENODEV;
-	}
-
-	if (dev_config->reset.port) {
-		if (!gpio_is_ready_dt(&dev_config->reset)) {
-			LOG_ERR("Device %s is not ready",
-				dev_config->reset.port->name);
-			return -ENODEV;
-		}
-
-		if (gpio_pin_configure_dt(&dev_config->reset,
-					  GPIO_OUTPUT_ACTIVE) < 0 ||
-		    gpio_pin_set_dt(&dev_config->reset, 0) < 0) {
-			return -EIO;
-		}
-	}
 
 	init_dev_cfg.freq = MHZ(1);
 	init_dev_cfg.io_mode = MSPI_IO_MODE_SINGLE;
@@ -527,6 +510,7 @@ static int drv_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+#if defined(CONFIG_MSPI_XIP)
 	/* Enable XIP access for this chip if specified so in DT. */
 	if (dev_config->xip_cfg.enable) {
 		rc = mspi_xip_config(dev_config->bus, &dev_config->mspi_id,
@@ -534,6 +518,49 @@ static int drv_init(const struct device *dev)
 		if (rc < 0) {
 			return rc;
 		}
+	}
+#endif
+
+	return 0;
+}
+
+static int drv_init(const struct device *dev)
+{
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct flash_mspi_nor_data *dev_data = dev->data;
+	int rc;
+
+	if (!device_is_ready(dev_config->bus)) {
+		LOG_ERR("Device %s is not ready", dev_config->bus->name);
+		return -ENODEV;
+	}
+
+	if (dev_config->reset.port) {
+		if (!gpio_is_ready_dt(&dev_config->reset)) {
+			LOG_ERR("Device %s is not ready",
+				dev_config->reset.port->name);
+			return -ENODEV;
+		}
+
+		if (gpio_pin_configure_dt(&dev_config->reset,
+					  GPIO_OUTPUT_ACTIVE) < 0 ||
+		    gpio_pin_set_dt(&dev_config->reset, 0) < 0) {
+			return -EIO;
+		}
+	}
+
+	rc = pm_device_runtime_get(dev_config->bus);
+	if (rc < 0) {
+		LOG_ERR("pm_device_runtime_get() failed: %d", rc);
+		return rc;
+	}
+
+	rc = flash_chip_init(dev);
+
+	(void)pm_device_runtime_put(dev_config->bus);
+
+	if (rc < 0) {
+		return rc;
 	}
 
 	k_sem_init(&dev_data->acquired, 1, K_SEM_MAX_LIMIT);
@@ -567,7 +594,8 @@ static const struct flash_driver_api drv_api = {
 		.bus = DEVICE_DT_GET(DT_INST_BUS(inst)),		\
 		.mspi_id = MSPI_DEVICE_ID_DT_INST(inst),		\
 		.mspi_cfg = MSPI_DEVICE_CONFIG_DT_INST(inst),		\
-		.xip_cfg = MSPI_XIP_CONFIG_DT_INST(inst),		\
+	IF_ENABLED(CONFIG_MSPI_XIP,					\
+		(.xip_cfg = MSPI_XIP_CONFIG_DT_INST(inst),))		\
 		.reset = GPIO_DT_SPEC_INST_GET_OR(inst,			\
 						  reset_gpios, {0}),	\
 		.flash_size = FLASH_SIZE_INST(inst),			\
