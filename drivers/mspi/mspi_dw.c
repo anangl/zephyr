@@ -20,7 +20,6 @@
 
 LOG_MODULE_REGISTER(mspi_dw, CONFIG_MSPI_LOG_LEVEL);
 
-#define INVALID_DEV_IDX 0xFFFF
 #define DUMMY_BYTE 0xAA
 
 #if defined(CONFIG_MSPI_XIP)
@@ -41,6 +40,7 @@ struct xip_ctrl {
 #endif
 
 struct mspi_dw_data {
+	const struct mspi_dev_id *dev_id;
 	uint32_t packets_done;
 	uint8_t *buf_pos;
 	const uint8_t *buf_end;
@@ -63,7 +63,8 @@ struct mspi_dw_data {
 	bool standard_spi;
 
 	struct k_sem finished;
-	struct mspi_dev_id dev_id;
+	struct k_sem ctx_lock;
+	struct k_sem cfg_lock;
 	struct mspi_xfer xfer;
 };
 
@@ -507,10 +508,9 @@ static bool apply_xip_addr_length(const struct mspi_dw_data *dev_data,
 }
 #endif /* defined(CONFIG_MSPI_XIP) */
 
-static int api_dev_config(const struct device *dev,
-			  const struct mspi_dev_id *dev_id,
-			  const enum mspi_dev_cfg_mask param_mask,
-			  const struct mspi_dev_cfg *cfg)
+static int _api_dev_config(const struct device *dev,
+			   const enum mspi_dev_cfg_mask param_mask,
+			   const struct mspi_dev_cfg *cfg)
 {
 	const struct mspi_dw_config *dev_config = dev->config;
 	struct mspi_dw_data *dev_data = dev->data;
@@ -652,13 +652,55 @@ static int api_dev_config(const struct device *dev,
 	/* Enable clock stretching. */
 	dev_data->spi_ctrlr0 |= SPI_CTRLR0_CLK_STRETCH_EN_BIT;
 
-	dev_data->dev_id = *dev_id;
-
 	return 0;
+}
+
+static int api_dev_config(const struct device *dev,
+			  const struct mspi_dev_id *dev_id,
+			  const enum mspi_dev_cfg_mask param_mask,
+			  const struct mspi_dev_cfg *cfg)
+{
+	struct mspi_dw_data *dev_data = dev->data;
+	int rc;
+
+	if (dev_id != dev_data->dev_id) {
+		rc = k_sem_take(&dev_data->cfg_lock,
+				K_MSEC(CONFIG_MSPI_COMPLETION_TIMEOUT_TOLERANCE));
+		if (rc < 0) {
+			LOG_ERR("Failed to switch controller to device");
+			return -EBUSY;
+		}
+
+		dev_data->dev_id = dev_id;
+
+		if (param_mask == MSPI_DEVICE_CONFIG_NONE) {
+			return 0;
+		}
+	}
+
+	(void)k_sem_take(&dev_data->ctx_lock, K_FOREVER);
+
+	rc = _api_dev_config(dev, param_mask, cfg);
+
+	k_sem_give(&dev_data->ctx_lock);
+
+	if (rc < 0) {
+		dev_data->dev_id = NULL;
+		k_sem_give(&dev_data->cfg_lock);
+	}
+
+	return rc;
 }
 
 static int api_get_channel_status(const struct device *dev, uint8_t ch)
 {
+	ARG_UNUSED(ch);
+
+	struct mspi_dw_data *dev_data = dev->data;
+
+	dev_data->dev_id = NULL;
+	k_sem_give(&dev_data->cfg_lock);
+
 	return 0;
 }
 
@@ -779,8 +821,8 @@ static int start_next_packet(const struct device *dev, k_timeout_t timeout)
 					     rx_fifo_threshold));
 	}
 
-	if (dev_data->dev_id.ce.port) {
-		rc = gpio_pin_set_dt(&dev_data->dev_id.ce, 1);
+	if (dev_data->dev_id->ce.port) {
+		rc = gpio_pin_set_dt(&dev_data->dev_id->ce, 1);
 		if (rc < 0) {
 			LOG_ERR("Failed to activate CE line (%d)", rc);
 			return rc;
@@ -802,7 +844,7 @@ static int start_next_packet(const struct device *dev, k_timeout_t timeout)
 		: 0);
 	write_spi_ctrlr0(dev, dev_data->spi_ctrlr0);
 	write_baudr(dev, dev_data->baudr);
-	write_ser(dev, BIT(dev_data->dev_id.dev_idx));
+	write_ser(dev, BIT(dev_data->dev_id->dev_idx));
 
 	if (xip_enabled) {
 		write_ssienr(dev, SSIENR_SSIC_EN_BIT);
@@ -875,7 +917,7 @@ static int start_next_packet(const struct device *dev, k_timeout_t timeout)
 	/* Disable the controller. This will immediately halt the transfer
 	 * if it hasn't finished yet.
 	 */
-	if (dev_data->xip_enabled) {
+	if (xip_enabled) {
 		/* If XIP is enabled, the controller must be kept enabled,
 		 * so disable it only momentarily if there's a need to halt
 		 * a transfer that has timeout out.
@@ -892,11 +934,11 @@ static int start_next_packet(const struct device *dev, k_timeout_t timeout)
 		write_ssienr(dev, 0);
 	}
 
-	if (dev_data->dev_id.ce.port) {
+	if (dev_data->dev_id->ce.port) {
 		int rc2;
 
 		/* Do not use `rc` to not overwrite potential timeout error. */
-		rc2 = gpio_pin_set_dt(&dev_data->dev_id.ce, 0);
+		rc2 = gpio_pin_set_dt(&dev_data->dev_id->ce, 0);
 		if (rc2 < 0) {
 			LOG_ERR("Failed to deactivate CE line (%d)", rc2);
 			return rc2;
@@ -906,26 +948,11 @@ static int start_next_packet(const struct device *dev, k_timeout_t timeout)
 	return rc;
 }
 
-static int api_transceive(const struct device *dev,
-			  const struct mspi_dev_id *dev_id,
-			  const struct mspi_xfer *req)
+static int _api_transceive(const struct device *dev,
+			   const struct mspi_xfer *req)
 {
 	struct mspi_dw_data *dev_data = dev->data;
 	int rc;
-
-	if (dev_id->dev_idx != dev_data->dev_id.dev_idx) {
-		return -EINVAL;
-	}
-
-	/* TODO: add support for asynchronous transfers */
-	if (req->async) {
-		return -ENOTSUP;
-	}
-
-	rc = pm_device_runtime_get(dev);
-	if (rc < 0) {
-		return rc;
-	}
 
 	dev_data->spi_ctrlr0 &= ~SPI_CTRLR0_WAIT_CYCLES_MASK
 			     &  ~SPI_CTRLR0_INST_L_MASK
@@ -958,25 +985,50 @@ static int api_transceive(const struct device *dev,
 		}
 	}
 
-	rc = pm_device_runtime_put(dev);
-	if (rc < 0) {
-		return rc;
-	}
-
 	return 0;
 }
 
-#if defined(CONFIG_MSPI_XIP)
-static int api_xip_config(const struct device *dev,
+static int api_transceive(const struct device *dev,
 			  const struct mspi_dev_id *dev_id,
-			  const struct mspi_xip_cfg *cfg)
+			  const struct mspi_xfer *req)
 {
 	struct mspi_dw_data *dev_data = dev->data;
 	int rc;
 
-	if (dev_id->dev_idx != dev_data->dev_id.dev_idx) {
+	if (dev_id != dev_data->dev_id) {
+		LOG_ERR("Controller is not configured for this device");
 		return -EINVAL;
 	}
+
+	/* TODO: add support for asynchronous transfers */
+	if (req->async) {
+		return -ENOTSUP;
+	}
+
+	(void)k_sem_take(&dev_data->ctx_lock, K_FOREVER);
+
+	rc = pm_device_runtime_get(dev);
+	if (rc < 0) {
+		LOG_ERR("pm_device_runtime_get() failed: %d", rc);
+		rc = -EIO;
+	} else {
+		rc = _api_transceive(dev, req);
+
+		(void)pm_device_runtime_put(dev);
+	}
+
+	k_sem_give(&dev_data->ctx_lock);
+
+	return rc;
+}
+
+#if defined(CONFIG_MSPI_XIP)
+static int _api_xip_config(const struct device *dev,
+			   const struct mspi_dev_id *dev_id,
+			   const struct mspi_xip_cfg *cfg)
+{
+	struct mspi_dw_data *dev_data = dev->data;
+	int rc;
 
 	if (!cfg->enable) {
 		rc = vendor_specific_xip_disable(dev, dev_id, cfg);
@@ -989,7 +1041,7 @@ static int api_xip_config(const struct device *dev,
 		if (!dev_data->xip_enabled) {
 			write_ssienr(dev, 0);
 
-			pm_device_runtime_put(dev);
+			(void)pm_device_runtime_put(dev);
 		}
 
 		return 0;
@@ -1007,7 +1059,11 @@ static int api_xip_config(const struct device *dev,
 			return -EINVAL;
 		}
 
-		pm_device_runtime_get(dev);
+		rc = pm_device_runtime_get(dev);
+		if (rc < 0) {
+			LOG_ERR("pm_device_runtime_get() failed: %d", rc);
+			rc = -EIO;
+		}
 
 		ctrl.read |= FIELD_PREP(XIP_CTRL_WAIT_CYCLES_MASK,
 					params->rx_dummy);
@@ -1053,6 +1109,27 @@ static int api_xip_config(const struct device *dev,
 	dev_data->xip_enabled |= BIT(dev_id->dev_idx);
 
 	return 0;
+}
+
+static int api_xip_config(const struct device *dev,
+			  const struct mspi_dev_id *dev_id,
+			  const struct mspi_xip_cfg *cfg)
+{
+	struct mspi_dw_data *dev_data = dev->data;
+	int rc;
+
+	if (cfg->enable && dev_id != dev_data->dev_id) {
+		LOG_ERR("Controller is not configured for this device");
+		return -EINVAL;
+	}
+
+	(void)k_sem_take(&dev_data->ctx_lock, K_FOREVER);
+
+	rc = _api_xip_config(dev, dev_id, cfg);
+
+	k_sem_give(&dev_data->ctx_lock);
+
+	return rc;
 }
 #endif /* defined(CONFIG_MSPI_XIP) */
 
@@ -1108,8 +1185,9 @@ static int dev_init(const struct device *dev)
 
 	dev_config->irq_config();
 
-	dev_data->dev_id.dev_idx = INVALID_DEV_IDX;
 	k_sem_init(&dev_data->finished, 0, 1);
+	k_sem_init(&dev_data->cfg_lock, 1, 1);
+	k_sem_init(&dev_data->ctx_lock, 1, 1);
 
 	for (ce_gpio = dev_config->ce_gpios;
 	     ce_gpio < &dev_config->ce_gpios[dev_config->ce_gpios_len];
