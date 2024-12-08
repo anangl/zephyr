@@ -53,6 +53,7 @@ static int acquire(const struct device *dev)
 		return rc;
 	}
 
+	/* This acquires the MSPI controller and configures it for the flash. */
 	rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
 			     MSPI_DEVICE_CONFIG_ALL, &dev_config->mspi_cfg);
 	if (rc < 0) {
@@ -67,6 +68,9 @@ static void release(const struct device *dev)
 {
 	const struct flash_mspi_nor_config *dev_config = dev->config;
 	struct flash_mspi_nor_data *dev_data = dev->data;
+
+	/* This releases the MSPI controller. */
+	(void)mspi_get_channel_status(dev_config->bus, 0);
 
 	(void)pm_device_runtime_put(dev_config->bus);
 
@@ -555,7 +559,15 @@ static int drv_init(const struct device *dev)
 		return rc;
 	}
 
-	rc = flash_chip_init(dev);
+	/* Acquire the MSPI controller. */
+	rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
+			     MSPI_DEVICE_CONFIG_NONE, NULL);
+	if (rc == 0) {
+		rc = flash_chip_init(dev);
+
+		/* Release the MSPI controller. */
+		(void)mspi_get_channel_status(dev_config->bus, 0);
+	}
 
 	(void)pm_device_runtime_put(dev_config->bus);
 
